@@ -1,0 +1,32 @@
+# The one package, and the single source of truth for crate versions and
+# features. Bazel builds it through crate_universe (MODULE.bazel); cargo itself
+# is not the build and is not part of the gate.
+[package]
+name = "allthechanges"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+repository = "https://github.com/rnortman/allthechanges"
+description = "Changelog fragments: keep CHANGELOG.md conflict-free by collecting per-change files from changelog.d/"
+readme = "README.md"
+keywords = ["changelog", "keep-a-changelog", "release", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+include = ["/src", "/README.md", "/CHANGELOG.md", "/LICENSE", "/NOTICE"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "allthechanges"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+jiff = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+brenn-git-fixture = "0.1"
+tempfile = "3"

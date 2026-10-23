@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# Two jobs because only a job boundary keeps a write-capable token away from
+# what `make check` runs: within one job any step can rewrite later steps'
+# PATH and environment, and the gate runs code outside the Bazel sandbox.
+# The token that creates the release goes to a job with no checkout and no Bazel.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # The gate plus both cross builds, on a cache that may be cold.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-bazel
+
+      # A tag that does not name the crate's version is a red run and no
+      # release.
+      - name: Tag matches Cargo.toml
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match version $version in Cargo.toml" >&2
+            exit 1
+          fi
+
+      - run: make check
+      - run: make release
+
+      # The binaries, their checksums, and the release's own CHANGELOG.md
+      # section as the release notes. A missing section fails the run.
+      - name: Stage the release
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir dist
+          for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            cp "bazel-bin/tools/release/allthechanges-$triple" "dist/allthechanges-$TAG-$triple"
+          done
+          (cd dist && sha256sum allthechanges-* > SHA256SUMS)
+          awk -v heading="## [${TAG#v}]" '
+            index($0, "## ") == 1 { if (found) exit; if (index($0, heading) == 1) found = 1 }
+            found
+          ' CHANGELOG.md > dist/notes.md
+          test -s dist/notes.md
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      # No checkout, so gh is told the repository.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/allthechanges-* dist/SHA256SUMS --title "$TAG" --notes-file dist/notes.md --repo "$GITHUB_REPOSITORY"

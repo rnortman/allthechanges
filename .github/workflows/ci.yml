@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # The default three activity types plus the two label events, so adding or
+  # removing the skip-changelog label re-runs the check and the required
+  # status reflects the label.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_dispatch:
+
+# The job only reads the tree. Pinned here so a permissive repo-level default
+# cannot silently hand a write-capable token to cached actions or anything
+# `make check` executes.
+permissions:
+  contents: read
+
+jobs:
+  # Named for its role rather than its contents: the required-status-check rule
+  # on the branch embeds this string, so renaming it later silently makes that
+  # rule vacuous.
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    # A cold cache fetches the Rust, LLVM and musl toolchains, compiles the
+    # scanner's dependency closure once and cross-builds both release binaries.
+    timeout-minutes: 60
+    steps:
+      # Full history, so the fragment check below can diff against the base
+      # branch.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # No Rust toolchain step and no scanner install: everything this job
+      # compiles, lints, runs and scans goes through Bazel, which fetches its
+      # own pinned toolchains, brenn-scrub and gitleaks by checksum. bazelisk is
+      # preinstalled on the runner image and reads .bazelversion, so the Bazel
+      # here is the one the tree pins rather than the image's.
+
+      - uses: ./.github/actions/setup-bazel
+
+      # The gate is reproducible locally on a fresh clone. No lane may skip in
+      # CI. It includes the scrub kit check and the tree scan; with no private
+      # overlay here, the scan applies the public rules only.
+      - run: make check
+
+      # Every pull request adds a changelog fragment. The skip-changelog label
+      # is the one exemption, for release pull requests (which delete
+      # fragments and add none) and changes with nothing to tell a user. The
+      # binary is the one `make check` just built: this runs before
+      # `make release`, whose --config=release repoints bazel-bin at the
+      # optimised output tree, where the host binary does not exist.
+      - name: Changelog fragment added
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+        env:
+          BASE: ${{ github.base_ref }}
+        run: bazel-bin/allthechanges query --range "origin/$BASE...HEAD" --require
+
+      # The static musl lane builds on every push, not first at a tag. The
+      # x86_64 binary runs on this runner; the aarch64 one is built only.
+      - run: make release
+      - run: bazel-bin/tools/release/allthechanges-x86_64-unknown-linux-musl --version

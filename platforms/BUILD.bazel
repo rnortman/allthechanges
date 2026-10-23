@@ -1,0 +1,42 @@
+"""The platforms the release binaries are built for."""
+
+package(default_visibility = ["//visibility:public"])
+
+# Bazel's own constraint vocabulary has no libc axis, and rules_rust maps both
+# x86_64-unknown-linux-gnu and x86_64-unknown-linux-musl onto the same cpu+os
+# pair. Without a distinguishing constraint the two Rust toolchains are
+# ambiguous, so the axis is declared here and carried by the musl platforms.
+# Every other platform, the host included, takes the glibc default.
+constraint_setting(
+    name = "libc",
+    default_constraint_value = ":libc_glibc",
+)
+
+constraint_value(
+    name = "libc_glibc",
+    constraint_setting = ":libc",
+)
+
+constraint_value(
+    name = "libc_musl",
+    constraint_setting = ":libc",
+)
+
+# Static-linked release binaries, reached through //tools/release.
+platform(
+    name = "linux_x86_64_musl",
+    constraint_values = [
+        ":libc_musl",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+platform(
+    name = "linux_aarch64_musl",
+    constraint_values = [
+        ":libc_musl",
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+    ],
+)

@@ -1,0 +1,22 @@
+"""The static musl release binaries.
+
+Each target builds //:allthechanges for its platform. `manual`, so `//...`
+does not build the two cross closures on every `make check`; `make release`
+names them.
+"""
+
+load(":defs.bzl", "platform_transition_binary")
+
+platform_transition_binary(
+    name = "allthechanges-x86_64-unknown-linux-musl",
+    binary = "//:allthechanges",
+    platform = "//platforms:linux_x86_64_musl",
+    tags = ["manual"],
+)
+
+platform_transition_binary(
+    name = "allthechanges-aarch64-unknown-linux-musl",
+    binary = "//:allthechanges",
+    platform = "//platforms:linux_aarch64_musl",
+    tags = ["manual"],
+)

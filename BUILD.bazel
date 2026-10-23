@@ -1,0 +1,96 @@
+load("@buildifier_prebuilt//:rules.bzl", "buildifier", "buildifier_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The root package publishes the files other packages and the module
+# extensions read. //tools/pins reads BUILD.bazel to hold VERSION equal to
+# Cargo.toml's.
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+    "Cargo.lock",
+    "MODULE.bazel",
+    "cargo-bazel-lock.json",
+    "clippy.toml",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+])
+
+# BUILD-file formatting and lint. The test scans the whole workspace rather
+# than a `srcs` list because a glob in the root package cannot see files in
+# other packages; `no_sandbox` is what buildifier_prebuilt requires for that,
+# and the wrapper tags the test no-cache so it always reruns.
+BUILDIFIER_EXCLUDES = [
+    "./.git/*",
+    "./bazel-*/*",
+]
+
+buildifier(
+    name = "buildifier",
+    exclude_patterns = BUILDIFIER_EXCLUDES,
+    lint_mode = "fix",
+    mode = "fix",
+)
+
+buildifier_test(
+    name = "buildifier_test",
+    size = "small",
+    exclude_patterns = BUILDIFIER_EXCLUDES,
+    lint_mode = "warn",
+    mode = "diff",
+    no_sandbox = True,
+    workspace = "//:MODULE.bazel",
+)
+
+# --- The allthechanges crate ----------------------------------------------
+
+VERSION = "0.1.0"
+
+rust_library(
+    name = "allthechanges_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "allthechanges",
+    crate_root = "src/lib.rs",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    version = VERSION,
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "allthechanges",
+    srcs = ["src/main.rs"],
+    crate_name = "allthechanges_cli",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    version = VERSION,
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True) + [":allthechanges_lib"],
+)
+
+rust_test(
+    name = "allthechanges_lib_test",
+    size = "small",
+    crate = ":allthechanges_lib",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    version = VERSION,
+    deps = all_crate_deps(normal_dev = True),
+)
+
+# Runs the built binary; Bazel passes its path through ALLTHECHANGES_BIN.
+rust_test(
+    name = "cli_test",
+    size = "small",
+    srcs = ["tests/cli.rs"],
+    crate_root = "tests/cli.rs",
+    data = [":allthechanges"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    rustc_env = {"ALLTHECHANGES_BIN": "$(rootpath :allthechanges)"},
+    version = VERSION,
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
