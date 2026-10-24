@@ -53,8 +53,8 @@ test:
 	bazel test //...
 
 # `bazel run` starts the binary in its runfiles tree; --run_under puts it back
-# in the directory make was invoked from, where changelog.d and CHANGELOG.md
-# are.
+# in the directory make was invoked from, where changelog.d, CHANGELOG.md,
+# todo.d and TODO.md are.
 ARGS ?=
 .PHONY: run
 run:

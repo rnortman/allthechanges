@@ -3,14 +3,14 @@
 # is not the build and is not part of the gate.
 [package]
 name = "allthechanges"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
 repository = "https://github.com/rnortman/allthechanges"
-description = "Changelog fragments: keep CHANGELOG.md conflict-free by collecting per-change files from changelog.d/"
+description = "Changelog and TODO fragments: keep CHANGELOG.md and TODO.md conflict-free by collecting per-change files from changelog.d/ and todo.d/"
 readme = "README.md"
-keywords = ["changelog", "keep-a-changelog", "release", "cli"]
+keywords = ["changelog", "keep-a-changelog", "release", "cli", "todo"]
 categories = ["command-line-utilities", "development-tools"]
 include = ["/src", "/README.md", "/CHANGELOG.md", "/LICENSE", "/NOTICE"]
 

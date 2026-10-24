@@ -1,5 +1,5 @@
 {
-  "checksum": "ee89f8e2921b9be78680b6de0e2960cd376e7b8a1be94112141914ee7ff5763d",
+  "checksum": "791e0cc293eb5a75b903874e0c637536a975e4d4a81b8b78702da598925dec95",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -73,7 +73,7 @@
     ]
   },
   "crates": {
-    "allthechanges 0.1.0": {
+    "allthechanges 0.2.0": {
       "common_attrs": {
         "deps": [
           {
@@ -121,7 +121,7 @@
           }
         }
       ],
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     "anstream 1.0.0": {
       "common_attrs": {
@@ -2653,6 +2653,6 @@
     "tempfile 3.27.0"
   ],
   "workspace_members": {
-    "allthechanges 0.1.0": ""
+    "allthechanges 0.2.0": ""
   }
 }

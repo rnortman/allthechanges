@@ -4,7 +4,9 @@
 
 `allthechanges` keeps `CHANGELOG.md` free of merge conflicts: each change's
 entry is a fragment file under `changelog.d/`, `query` lints and lists them,
-and `gather` folds them into a release section of `CHANGELOG.md`. Usage,
+and `gather` folds them into a release section of `CHANGELOG.md`. `todo
+query` and `todo gather` do the same for `TODO.md` entries under `todo.d/`.
+Usage,
 format and contract: `README.md`. Read it first.
 
 ## Build: Bazel, and only Bazel
@@ -83,16 +85,18 @@ The tool's observable behaviour is its interface, and changing any of it is a
 breaking change that goes in a `changed` fragment:
 
 - Exit codes: 0 done, 1 the check failed (lint problems, `--require` with no
-  fragment, `gather` refused), 2 usage error, 3 operational error.
+  fragment, `gather` or `todo gather` refused), 2 usage error, 3 operational error.
 - Streams: stdout carries the report and nothing else (with `--json`, exactly
   one JSON document and a newline); stderr carries diagnostics only. Nothing
   reaches stderr on exit 0 or 1; stdout is empty on exit 2 and 3.
 - The JSON field names, the problem codes (`bad-name`, `unknown-section`,
-  `not-a-fragment`, `not-utf8`, `empty`, `not-a-list`, `missing`) and the
+  `not-a-fragment`, `not-utf8`, `empty`, `not-a-list`, `not-an-entry`,
+  `present`, `missing`) and the
   `refused` values (`problems`, `nothing-to-gather`, `version-present`).
 
 `gather` touches only the section it inserts: the `[Unreleased]` body,
 earlier releases and link-reference definitions are never rewritten.
+`todo gather` touches only the `## Open` entries it inserts.
 
 ## The one host program
 
@@ -114,10 +118,12 @@ nothing to tell a user. Never edit `CHANGELOG.md` by hand;
 
 ## Releasing
 
-On a branch: `make run ARGS="gather --version X.Y.Z"`; set `version` in
+On a branch: `make run ARGS="gather --version X.Y.Z"` and
+`make run ARGS="todo gather"`; set `version` in
 `Cargo.toml` and `VERSION` in `BUILD.bazel` to `X.Y.Z`; `make repin` (the
 root package's entry in `Cargo.lock` and the crate_universe lock change with
-the version); commit the gathered changelog, the deleted fragments, both
+the version); commit the gathered changelog and `TODO.md`, the fragments
+deleted from `changelog.d/` and `todo.d/`, both
 manifests and every lock file that changed. Open a pull request labelled
 `skip-changelog` and merge it, tag the resulting `main` commit `vX.Y.Z` and
 push the tag (the release workflow attaches the musl binaries), then
@@ -140,6 +146,14 @@ Two pieces that stay in sync:
 - `TODO.md` at the repo root: the master list. Each entry has a slug, a
   description, and the deferral context.
 - `TODO(slug)` comments in code, marking the spot where the work happens.
+
+A new entry is written as a fragment, `todo.d/<slug>.md` holding the
+description and context — never as an edit of `TODO.md`.
+`make run ARGS="todo gather"` folds the fragments into `TODO.md` at release
+time, so between releases the open list is `TODO.md` plus `todo.d/`;
+`make run ARGS="todo query"` lists the pending half. Removing a done TODO
+deletes its fragment if it still is one, else its `TODO.md` entry, and its
+comment.
 
 Slugs are the join key; adding a TODO requires both halves. Don't use TODOs for
 vague aspirations. Every TODO describes a concrete thing, in a place where

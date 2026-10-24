@@ -12,6 +12,8 @@ bazel-*
 # `cargo build` still produces one) and rustfmt's backup files.
 target/
 **/*.rs.bk
+# The `target` module's unit tests are source, not a build tree.
+!/src/target/
 
 # The IDE's view of the build, written by `make ide`. It names absolute paths
 # into a Bazel output base, so it is per-machine by construction.

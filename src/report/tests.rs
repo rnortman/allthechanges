@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::changelog::{Outcome, Refusal, Release};
-use crate::fragment::{Finding, FragmentName, ProblemCode};
+use crate::changelog::{FragmentName, Outcome, Release};
+use crate::fragment::{Finding, ProblemCode};
 
-fn fragment(file_name: &str, body: &[&str]) -> Fragment {
+fn fragment(file_name: &str, body: &[&str]) -> Fragment<Changelog> {
     Fragment {
         path: PathBuf::from("changelog.d").join(file_name),
         name: FragmentName::parse(file_name).unwrap(),
@@ -12,7 +12,7 @@ fn fragment(file_name: &str, body: &[&str]) -> Fragment {
     }
 }
 
-fn sample() -> Scan {
+fn sample() -> Scan<Changelog> {
     Scan {
         fragments: vec![
             fragment(
@@ -167,7 +167,7 @@ fn gather_release() -> Release<'static> {
     }
 }
 
-fn gathered(scan: &Scan) -> Outcome {
+fn gathered(scan: &Scan<Changelog>) -> Outcome {
     Outcome::Gathered {
         created: false,
         rendered: "## [1.0.0] - 2026-10-23\n\n### Added\n\n- Zed.\n".into(),
@@ -261,5 +261,237 @@ fn gather_human_forms() {
          \n\
          Problems:\n\
          changelog.d/typo.fxied.md: unknown-section: \"fxied\" is not a section\n"
+    );
+}
+
+// --- The TODO kind ---------------------------------------------------------
+
+fn todo_fragment(slug: &str, body: &[&str]) -> Fragment<Todo> {
+    Fragment {
+        path: PathBuf::from("todo.d").join(format!("{slug}.md")),
+        name: todo::TodoName { slug: slug.into() },
+        body: body.iter().map(|l| l.to_string()).collect(),
+    }
+}
+
+fn todo_sample() -> Scan<Todo> {
+    Scan {
+        fragments: vec![
+            todo_fragment("audit", &["Audit the graph.", "", "Second paragraph."]),
+            todo_fragment("loops", &["Detect loops."]),
+        ],
+        problems: vec![
+            Finding::new(
+                ProblemCode::BadName,
+                "expected <slug>.md, where the slug is letters, digits, '-' and '_'",
+            )
+            .at("todo.d/bad slug.md"),
+        ],
+    }
+}
+
+#[test]
+fn todo_query_json_has_the_schema_fields_in_order() {
+    let scan = todo_sample();
+    let report = TodoQueryReport::new(Some(Path::new("todo.d")), None, &scan);
+    let json = report.json();
+    assert!(json.ends_with("}\n"), "{json}");
+    let keys = ["dir", "range", "fragments", "problems", "ok"];
+    let at = |key: &str| json.find(&format!("\"{key}\":")).unwrap();
+    assert!(keys.windows(2).all(|w| at(w[0]) < at(w[1])), "{json}");
+    let fragment_keys = ["path", "slug", "body"];
+    assert!(
+        fragment_keys.windows(2).all(|w| at(w[0]) < at(w[1])),
+        "{json}"
+    );
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), keys.len());
+    assert_eq!(
+        value["fragments"][1],
+        serde_json::json!({
+            "path": "todo.d/loops.md",
+            "slug": "loops",
+            "body": ["Detect loops."],
+        })
+    );
+    assert_eq!(
+        value["fragments"][0].as_object().unwrap().len(),
+        fragment_keys.len()
+    );
+    assert_eq!(value["problems"][0]["code"], "bad-name");
+    assert_eq!(value["ok"], false);
+}
+
+#[test]
+fn todo_query_ok_is_no_problems() {
+    let clean = Scan {
+        fragments: todo_sample().fragments,
+        problems: vec![],
+    };
+    let dir = Some(Path::new("todo.d"));
+    assert!(TodoQueryReport::new(dir, None, &clean).ok);
+    assert!(TodoQueryReport::new(dir, None, &Scan::default()).ok);
+    assert!(!TodoQueryReport::new(dir, None, &todo_sample()).ok);
+}
+
+#[test]
+fn todo_query_human_listing() {
+    let scan = todo_sample();
+    let report = TodoQueryReport::new(Some(Path::new("todo.d")), None, &scan);
+    assert_eq!(
+        report.human(),
+        "todo.d: 2 fragments, 1 problem\n\
+         \n\
+         ### audit\n\
+         \n\
+         Audit the graph.\n\
+         \n\
+         Second paragraph.\n\
+         \n\
+         ### loops\n\
+         \n\
+         Detect loops.\n\
+         \n\
+         Problems:\n\
+         todo.d/bad slug.md: bad-name: expected <slug>.md, where the slug is letters, digits, '-' and '_'\n"
+    );
+}
+
+#[test]
+fn todo_query_headers() {
+    let scan = Scan::default();
+    assert_eq!(
+        TodoQueryReport::new(None, None, &scan).human(),
+        "no todo.d or .todo.d: 0 fragments\n"
+    );
+    assert_eq!(
+        TodoQueryReport::new(Some(Path::new(".todo.d")), Some("A..B"), &scan).human(),
+        ".todo.d: 0 fragments added in A..B, 0 problems\n"
+    );
+}
+
+fn todo_target() -> todo::Target<'static> {
+    todo::Target {
+        todo: Path::new("TODO.md"),
+        dry_run: false,
+    }
+}
+
+fn todo_gathered(scan: &Scan<Todo>, created: bool) -> todo::Outcome {
+    todo::Outcome::Gathered {
+        created,
+        rendered: "### loops\n\nDetect loops.\n".into(),
+        fragments: scan.fragments.iter().map(|f| f.path.clone()).collect(),
+    }
+}
+
+fn present(slug: &str) -> Problem {
+    Finding::new(
+        ProblemCode::Present,
+        format!("TODO.md already has an entry \"### {slug}\""),
+    )
+    .at(format!("todo.d/{slug}.md"))
+}
+
+#[test]
+fn todo_gather_json_has_the_schema_fields_in_order() {
+    let scan = Scan {
+        fragments: vec![todo_fragment("loops", &["Detect loops."])],
+        problems: Vec::new(),
+    };
+    let outcome = todo_gathered(&scan, false);
+    let json = TodoGatherReport::new(&todo_target(), &scan, &outcome).json();
+    assert!(json.ends_with("}\n"), "{json}");
+    let keys = [
+        "todo", "created", "dry_run", "gathered", "rendered", "problems", "refused", "ok",
+    ];
+    let at = |key: &str| json.find(&format!("\"{key}\":")).unwrap();
+    assert!(keys.windows(2).all(|w| at(w[0]) < at(w[1])), "{json}");
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), keys.len());
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "todo": "TODO.md",
+            "created": false,
+            "dry_run": false,
+            "gathered": ["todo.d/loops.md"],
+            "rendered": "### loops\n\nDetect loops.\n",
+            "problems": [],
+            "refused": null,
+            "ok": true,
+        })
+    );
+}
+
+#[test]
+fn todo_gather_lists_present_after_the_scans_problems() {
+    let scan = todo_sample();
+    let outcome = todo::Outcome::Refused {
+        refusal: Refusal::Problems,
+        present: vec![present("audit")],
+    };
+    let report = TodoGatherReport::new(&todo_target(), &scan, &outcome);
+    let value: serde_json::Value = serde_json::from_str(&report.json()).unwrap();
+    assert_eq!(value["refused"], "problems");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["rendered"], serde_json::Value::Null);
+    assert_eq!(value["gathered"], serde_json::json!([]));
+    let codes: Vec<&str> = value["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["bad-name", "present"]);
+}
+
+#[test]
+fn todo_gather_human_forms() {
+    let none = Scan::default();
+    let refused = todo::Outcome::Refused {
+        refusal: Refusal::Problems,
+        present: vec![present("audit")],
+    };
+    assert_eq!(
+        TodoGatherReport::new(&todo_target(), &none, &refused).human(),
+        "nothing gathered: 1 problem in the fragments\n\
+         \n\
+         Problems:\n\
+         todo.d/audit.md: present: TODO.md already has an entry \"### audit\"\n"
+    );
+    let nothing = todo::Outcome::Refused {
+        refusal: Refusal::NothingToGather,
+        present: Vec::new(),
+    };
+    let report = TodoGatherReport::new(&todo_target(), &none, &nothing);
+    assert_eq!(report.human(), "nothing gathered: no fragments to gather\n");
+    assert_eq!(report.refused, Some(Refusal::NothingToGather));
+    assert!(report.problems.is_empty());
+
+    let scan = Scan {
+        fragments: vec![todo_fragment("loops", &["Detect loops."])],
+        problems: Vec::new(),
+    };
+    let dry = todo::Target {
+        dry_run: true,
+        ..todo_target()
+    };
+    let created = todo_gathered(&scan, true);
+    assert_eq!(
+        TodoGatherReport::new(&dry, &scan, &created).human(),
+        "dry run: would write to TODO.md (created):\n\n\
+         ### loops\n\nDetect loops.\n"
+    );
+    let outcome = todo_gathered(&scan, false);
+    assert_eq!(
+        TodoGatherReport::new(&todo_target(), &scan, &outcome).human(),
+        "gathered 1 fragment into TODO.md\n\
+         deleted todo.d/loops.md\n"
+    );
+    assert_eq!(
+        TodoGatherReport::new(&todo_target(), &scan, &created).human(),
+        "gathered 1 fragment into TODO.md (created)\n\
+         deleted todo.d/loops.md\n"
     );
 }

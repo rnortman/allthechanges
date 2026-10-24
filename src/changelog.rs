@@ -1,17 +1,244 @@
-//! Folding the fragments into `CHANGELOG.md` as one new release section.
+//! The changelog kind: fragments `[<date>.]<slug>.<section>.md` whose
+//! bodies are Markdown list items, folded into `CHANGELOG.md` as one new
+//! release section.
 //!
 //! Only the inserted section is written: the `[Unreleased]` body, earlier
 //! releases and link-reference definitions stay as they are.
 
+use std::cmp::Ordering;
 use std::fmt;
-use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use serde::Serialize;
 
 use crate::Error;
-use crate::scan::{Fragment, Scan, by_section};
+use crate::fragment::{self, Finding, Kind, ProblemCode, is_slug};
+use crate::scan::{Fragment, Scan};
+use crate::target::{self, Heading, Refusal};
+
+/// The changelog fragment kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Changelog;
+
+impl Kind for Changelog {
+    const DIRS: [&'static str; 2] = ["changelog.d", ".changelog.d"];
+    type Name = FragmentName;
+
+    fn parse_name(file_name: &str) -> Result<FragmentName, Finding> {
+        FragmentName::parse(file_name)
+    }
+
+    fn parse_body(bytes: &[u8]) -> Result<Vec<String>, Finding> {
+        parse_body(bytes)
+    }
+}
+
+/// A Keep a Changelog section. The declaration order is the canonical order
+/// sections are listed and written in; it serialises as [`Section::name`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Section {
+    Added,
+    Changed,
+    Deprecated,
+    Removed,
+    Fixed,
+    Security,
+}
+
+impl Section {
+    /// Every section, in canonical order.
+    pub(crate) const ALL: [Section; 6] = [
+        Section::Added,
+        Section::Changed,
+        Section::Deprecated,
+        Section::Removed,
+        Section::Fixed,
+        Section::Security,
+    ];
+
+    /// The name used in fragment file names: `added`, `fixed`, ...
+    fn name(self) -> &'static str {
+        match self {
+            Section::Added => "added",
+            Section::Changed => "changed",
+            Section::Deprecated => "deprecated",
+            Section::Removed => "removed",
+            Section::Fixed => "fixed",
+            Section::Security => "security",
+        }
+    }
+
+    /// The Markdown heading the section is written under: `### Added`, ...
+    pub(crate) fn heading(self) -> &'static str {
+        match self {
+            Section::Added => "### Added",
+            Section::Changed => "### Changed",
+            Section::Deprecated => "### Deprecated",
+            Section::Removed => "### Removed",
+            Section::Fixed => "### Fixed",
+            Section::Security => "### Security",
+        }
+    }
+}
+
+impl Serialize for Section {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl fmt::Display for Section {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The error of [`Section::from_str`]: the text is not a section name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSection(pub String);
+
+impl fmt::Display for UnknownSection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let expected: Vec<&str> = Section::ALL.iter().map(|s| s.name()).collect();
+        write!(
+            f,
+            "\"{}\" is not a section; expected one of {}",
+            self.0,
+            expected.join(", ")
+        )
+    }
+}
+
+impl FromStr for Section {
+    type Err = UnknownSection;
+
+    /// Exact, lowercase names only: `Fixed` is not `fixed`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Section::ALL
+            .into_iter()
+            .find(|section| section.name() == s)
+            .ok_or_else(|| UnknownSection(s.to_owned()))
+    }
+}
+
+/// A parsed changelog fragment file name. Ordered by section, then dated
+/// before undated, then date, then slug: the report order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FragmentName {
+    /// `YYYY-MM-DD` when the name starts with one; shape-checked only.
+    pub date: Option<String>,
+    pub slug: String,
+    pub section: Section,
+}
+
+impl FragmentName {
+    /// Parses `[<date>.]<slug>.<section>.md`. A name not ending in exactly
+    /// `.md` is `not-a-fragment`; a section that is not one of the six is
+    /// `unknown-section`; every other mismatch is `bad-name`.
+    pub(crate) fn parse(file_name: &str) -> Result<FragmentName, Finding> {
+        let Some(stem) = file_name.strip_suffix(".md") else {
+            return Err(fragment::not_markdown());
+        };
+        let parts: Vec<&str> = stem.split('.').collect();
+        let (date, slug, section) = match parts.as_slice() {
+            [slug, section] => (None, *slug, *section),
+            [date, slug, section] if is_date_shape(date) => (Some(*date), *slug, *section),
+            _ => return Err(bad_name()),
+        };
+        if !is_slug(slug) {
+            return Err(bad_name());
+        }
+        let section = section
+            .parse::<Section>()
+            .map_err(|e| Finding::new(ProblemCode::UnknownSection, e.to_string()))?;
+        Ok(FragmentName {
+            date: date.map(str::to_owned),
+            slug: slug.to_owned(),
+            section,
+        })
+    }
+
+    fn key(&self) -> (Section, bool, &Option<String>, &str) {
+        (self.section, self.date.is_none(), &self.date, &self.slug)
+    }
+}
+
+impl Ord for FragmentName {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+impl PartialOrd for FragmentName {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn bad_name() -> Finding {
+    Finding::new(
+        ProblemCode::BadName,
+        "expected [<YYYY-MM-DD>.]<slug>.<section>.md, where the slug is letters, digits, '-' and '_'",
+    )
+}
+
+/// `YYYY-MM-DD` in shape: four digits, hyphen, two digits, hyphen, two digits.
+fn is_date_shape(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            _ => c.is_ascii_digit(),
+        })
+}
+
+/// Checks a fragment's contents and returns its body lines: trailing
+/// whitespace trimmed from every line, trailing blank lines dropped. The
+/// first line starts a list item (`- `); every later line is blank, another
+/// item, or indented by at least two spaces. A carriage return anywhere but
+/// before a newline is `not-a-list`.
+pub(crate) fn parse_body(bytes: &[u8]) -> Result<Vec<String>, Finding> {
+    let lines = fragment::lines(bytes)?;
+    if let Some(n) = fragment::carriage_return(&lines) {
+        return Err(Finding::new(
+            ProblemCode::NotAList,
+            format!("line {n}: contains a carriage return"),
+        ));
+    }
+    if !lines[0].starts_with("- ") {
+        return Err(Finding::new(
+            ProblemCode::NotAList,
+            "line 1: a fragment starts with a \"- \" list item",
+        ));
+    }
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        if !(line.is_empty() || line.starts_with("- ") || line.starts_with("  ")) {
+            return Err(Finding::new(
+                ProblemCode::NotAList,
+                format!(
+                    "line {}: expected a \"- \" list item, a blank line or a line indented by two spaces",
+                    i + 1
+                ),
+            ));
+        }
+    }
+    Ok(lines)
+}
+
+/// The sections that have fragments, in canonical order, each with its
+/// fragments in the order given.
+pub(crate) fn by_section(
+    fragments: &[Fragment<Changelog>],
+) -> impl Iterator<Item = (Section, Vec<&Fragment<Changelog>>)> {
+    Section::ALL.into_iter().filter_map(move |section| {
+        let in_section: Vec<&Fragment<Changelog>> = fragments
+            .iter()
+            .filter(|f| f.name.section == section)
+            .collect();
+        (!in_section.is_empty()).then_some((section, in_section))
+    })
+}
 
 /// The file a `gather` creates when `CHANGELOG.md` does not exist.
 const HEADER: &str = "\
@@ -56,40 +283,6 @@ pub fn today() -> String {
     jiff::Zoned::now().date().strftime("%Y-%m-%d").to_string()
 }
 
-/// Why `gather` wrote nothing. Serialised as the interface's `refused`
-/// values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
-    /// The fragments have lint problems.
-    Problems,
-    /// No fragment directory, or no fragments in it.
-    NothingToGather,
-    /// The changelog already has a section for the version.
-    VersionPresent,
-}
-
-impl Refusal {
-    fn as_str(self) -> &'static str {
-        match self {
-            Refusal::Problems => "problems",
-            Refusal::NothingToGather => "nothing-to-gather",
-            Refusal::VersionPresent => "version-present",
-        }
-    }
-}
-
-impl Serialize for Refusal {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl fmt::Display for Refusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// What to gather into, and as which release.
 #[derive(Debug, Clone, Copy)]
 pub struct Release<'a> {
@@ -122,15 +315,15 @@ pub enum Outcome {
 /// on no fragments and on a version already present; otherwise renders the
 /// section and, unless a dry run, writes the changelog atomically and then
 /// deletes the fragments in order.
-pub fn gather(scan: &Scan, release: &Release<'_>) -> Result<Outcome, Error> {
+pub fn gather(scan: &Scan<Changelog>, release: &Release<'_>) -> Result<Outcome, Error> {
     if !scan.problems.is_empty() {
         return Ok(Outcome::Refused(Refusal::Problems));
     }
     if scan.fragments.is_empty() {
         return Ok(Outcome::Refused(Refusal::NothingToGather));
     }
-    let (existing, created) = read(release.changelog)?;
-    let headings = headings(&existing);
+    let (existing, created) = target::read(release.changelog, HEADER)?;
+    let headings = target::headings(&existing, "## ");
     if headings
         .iter()
         .any(|h| names_version(h.text, release.version))
@@ -139,73 +332,16 @@ pub fn gather(scan: &Scan, release: &Release<'_>) -> Result<Outcome, Error> {
     }
     let rendered = render(release.version, release.date, &scan.fragments);
     let at = insertion_line(&headings, existing.lines().count());
-    let content = insert(&existing, at, &rendered);
+    let content = target::insert(&existing, at, &rendered);
     let fragments: Vec<PathBuf> = scan.fragments.iter().map(|f| f.path.clone()).collect();
     if !release.dry_run {
-        write_atomically(release.changelog, &content)?;
-        delete(release.changelog, &fragments)?;
+        target::commit(release.changelog, &content, &fragments)?;
     }
     Ok(Outcome::Gathered {
         created,
         rendered,
         fragments,
     })
-}
-
-/// The changelog's text and whether it is to be created: [`HEADER`] when
-/// the file does not exist. Anything but a regular file at the path (a
-/// symlink included, which the rename would replace rather than update),
-/// CRLF line endings and invalid UTF-8 are errors.
-fn read(path: &Path) -> Result<(String, bool), Error> {
-    match fs::symlink_metadata(path) {
-        Ok(m) if m.is_file() => {}
-        Ok(_) => {
-            return Err(Error::Changelog {
-                path: path.to_path_buf(),
-                reason: "not a regular file",
-            });
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((HEADER.to_owned(), true)),
-        Err(e) => return Err(Error::io(path)(e)),
-    }
-    let bytes = fs::read(path).map_err(Error::io(path))?;
-    let text = String::from_utf8(bytes).map_err(|_| Error::Changelog {
-        path: path.to_path_buf(),
-        reason: "not valid UTF-8",
-    })?;
-    if text.contains('\r') {
-        return Err(Error::Changelog {
-            path: path.to_path_buf(),
-            reason: "CRLF line endings are not supported",
-        });
-    }
-    Ok((text, false))
-}
-
-/// A `## ` heading: its line index and the text after `## `, trailing
-/// whitespace trimmed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Heading<'a> {
-    line: usize,
-    text: &'a str,
-}
-
-/// Every `## ` heading outside fenced code blocks. A line starting with
-/// three backticks or three tildes opens or closes a fence.
-fn headings(text: &str) -> Vec<Heading<'_>> {
-    let mut fenced = false;
-    let mut found = Vec::new();
-    for (line, content) in text.lines().enumerate() {
-        if content.starts_with("```") || content.starts_with("~~~") {
-            fenced = !fenced;
-        } else if !fenced && let Some(rest) = content.strip_prefix("## ") {
-            found.push(Heading {
-                line,
-                text: rest.trim_end(),
-            });
-        }
-    }
-    found
 }
 
 /// The bracketed text at the start of a heading, and what follows the `]`.
@@ -237,7 +373,7 @@ fn insertion_line(headings: &[Heading<'_>], line_count: usize) -> usize {
 /// The release section: `## [<version>] - <date>`, then each section with
 /// fragments in canonical order, its heading and every fragment's body in
 /// the order given, blank-line separated. Ends with one `\n`.
-fn render(version: &str, date: &str, fragments: &[Fragment]) -> String {
+fn render(version: &str, date: &str, fragments: &[Fragment<Changelog>]) -> String {
     let mut out = format!("## [{version}] - {date}\n");
     for (section, in_section) in by_section(fragments) {
         out.push('\n');
@@ -251,81 +387,6 @@ fn render(version: &str, date: &str, fragments: &[Fragment]) -> String {
         }
     }
     out
-}
-
-/// `text` with `section` inserted before line `at`, exactly one blank line
-/// on either side of it, and a single `\n` at the end of the file.
-fn insert(text: &str, at: usize, section: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let (before, after) = lines.split_at(at);
-    let before = trim_blank(before, false);
-    let after = trim_blank(after, true);
-    let mut out = String::with_capacity(text.len() + section.len() + 2);
-    for line in before {
-        out.push_str(line);
-        out.push('\n');
-    }
-    if !before.is_empty() {
-        out.push('\n');
-    }
-    out.push_str(section);
-    if !after.is_empty() {
-        out.push('\n');
-    }
-    for line in after {
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
-}
-
-/// `lines` without trailing blank lines, and without leading ones too when
-/// `leading`.
-fn trim_blank<'a, 'b>(mut lines: &'a [&'b str], leading: bool) -> &'a [&'b str] {
-    while let [rest @ .., last] = lines
-        && last.trim().is_empty()
-    {
-        lines = rest;
-    }
-    while leading
-        && let [first, rest @ ..] = lines
-        && first.trim().is_empty()
-    {
-        lines = rest;
-    }
-    lines
-}
-
-/// Writes `content` to `<path>.tmp` beside `path`, then renames it over
-/// `path`. The temporary file is created new: anything already at its path,
-/// a symlink included, is an error and is left untouched.
-fn write_atomically(path: &Path, content: &str) -> Result<(), Error> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .and_then(|mut file| file.write_all(content.as_bytes()))
-        .map_err(Error::io(&tmp))?;
-    fs::rename(&tmp, path).map_err(Error::io(path))
-}
-
-/// Deletes the gathered fragments in order; the first failure stops it and
-/// names what was and was not deleted.
-fn delete(changelog: &Path, fragments: &[PathBuf]) -> Result<(), Error> {
-    for (i, path) in fragments.iter().enumerate() {
-        if let Err(source) = fs::remove_file(path) {
-            return Err(Error::Delete {
-                changelog: changelog.to_path_buf(),
-                deleted: fragments[..i].to_vec(),
-                remaining: fragments[i..].to_vec(),
-                source,
-            });
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

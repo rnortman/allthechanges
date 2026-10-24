@@ -585,9 +585,9 @@ fn read(root: &Path, name: &str) -> String {
     fs::read_to_string(root.join(name)).unwrap()
 }
 
-/// The `changelog.d` entries left, sorted.
-fn left(root: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(root.join("changelog.d"))
+/// The entries left in `dir`, sorted.
+fn left_in(root: &Path, dir: &str) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(root.join(dir))
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
@@ -616,7 +616,7 @@ fn gather_writes_the_release_and_deletes_the_fragments() {
         read(tmp.path(), "CHANGELOG.md"),
         EXISTING.replace("## [0.9.0]", &format!("{GATHERED}\n## [0.9.0]"))
     );
-    assert_eq!(left(tmp.path()), [".gitkeep"]);
+    assert_eq!(left_in(tmp.path(), "changelog.d"), [".gitkeep"]);
     assert_eq!(
         json(&output),
         json!({
@@ -684,7 +684,7 @@ fn gather_dry_run_changes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     clean_fixture(tmp.path());
     write(tmp.path(), "CHANGELOG.md", EXISTING);
-    let before = left(tmp.path());
+    let before = left_in(tmp.path(), "changelog.d");
     let args = [
         "gather",
         "--version",
@@ -705,13 +705,16 @@ fn gather_dry_run_changes_nothing() {
     assert_eq!(report["dry_run"], true);
     assert_eq!(report["rendered"], GATHERED);
     assert_eq!(read(tmp.path(), "CHANGELOG.md"), EXISTING);
-    assert_eq!(left(tmp.path()), before);
+    assert_eq!(left_in(tmp.path(), "changelog.d"), before);
 }
 
 /// Runs a gather that must refuse with `refused`, and checks nothing changed.
 fn assert_refused(root: &Path, refused: &str) -> Value {
     let changelog = fs::read(root.join("CHANGELOG.md")).ok();
-    let fragments = root.join("changelog.d").exists().then(|| left(root));
+    let fragments = root
+        .join("changelog.d")
+        .exists()
+        .then(|| left_in(root, "changelog.d"));
     let output = run(root, &["gather", "--version", "1.0.0", "--json"]);
     assert_exit(&output, 1);
     let report = json(&output);
@@ -721,7 +724,9 @@ fn assert_refused(root: &Path, refused: &str) -> Value {
     assert_eq!(report["gathered"], json!([]));
     assert_eq!(fs::read(root.join("CHANGELOG.md")).ok(), changelog);
     assert_eq!(
-        root.join("changelog.d").exists().then(|| left(root)),
+        root.join("changelog.d")
+            .exists()
+            .then(|| left_in(root, "changelog.d")),
         fragments
     );
     let human = run(root, &["gather", "--version", "1.0.0"]);
@@ -819,7 +824,7 @@ fn gather_bad_values_are_usage_errors() {
         let output = run(tmp.path(), args);
         assert_exit(&output, 2);
     }
-    assert_eq!(left(tmp.path()).len(), 3);
+    assert_eq!(left_in(tmp.path(), "changelog.d").len(), 3);
 }
 
 #[test]
@@ -834,5 +839,543 @@ fn gather_crlf_changelog_exits_three() {
         "allthechanges: CHANGELOG.md: CRLF line endings are not supported\n"
     );
     assert_eq!(read(tmp.path(), "CHANGELOG.md"), "# Changelog\r\n");
-    assert_eq!(left(tmp.path()).len(), 3);
+    assert_eq!(left_in(tmp.path(), "changelog.d").len(), 3);
+}
+
+// --- TODO fragments -----------------------------------------------------
+
+/// `todo.d` holding two good fragments and a dotfile.
+fn todo_fixture(root: &Path) {
+    write(root, "todo.d/scan-loops.md", "Detect a symlink cycle.\n");
+    write(
+        root,
+        "todo.d/audit.md",
+        "Audit the dependency graph.\n\nSecond paragraph.\n",
+    );
+    write(root, "todo.d/.gitkeep", "");
+}
+
+#[test]
+fn todo_query_lists_fragments_for_humans() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_fixture(tmp.path());
+    let output = run(tmp.path(), &["todo", "query"]);
+    assert_exit(&output, 0);
+    assert_eq!(
+        stdout(&output),
+        "todo.d: 2 fragments, 0 problems\n\
+         \n\
+         ### audit\n\
+         \n\
+         Audit the dependency graph.\n\
+         \n\
+         Second paragraph.\n\
+         \n\
+         ### scan-loops\n\
+         \n\
+         Detect a symlink cycle.\n"
+    );
+}
+
+#[test]
+fn todo_query_json_matches_the_schema() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_fixture(tmp.path());
+    let expected = json!({
+        "dir": "todo.d",
+        "range": null,
+        "fragments": [
+            {"path": "todo.d/audit.md", "slug": "audit",
+             "body": ["Audit the dependency graph.", "", "Second paragraph."]},
+            {"path": "todo.d/scan-loops.md", "slug": "scan-loops",
+             "body": ["Detect a symlink cycle."]},
+        ],
+        "problems": [],
+        "ok": true,
+    });
+    for args in [
+        &["todo", "query", "--json"][..],
+        &["--json", "todo", "query"],
+        &["todo", "--json", "query"],
+    ] {
+        let output = run(tmp.path(), args);
+        assert_exit(&output, 0);
+        assert_eq!(json(&output), expected, "{args:?}");
+    }
+}
+
+#[test]
+fn todo_query_problems_exit_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_fixture(tmp.path());
+    write(tmp.path(), "todo.d/bad name.md", "Text.\n");
+    write(tmp.path(), "todo.d/titled.md", "Text.\n\n## A heading\n");
+
+    let output = run(tmp.path(), &["todo", "query", "--json"]);
+    assert_exit(&output, 1);
+    let report = json(&output);
+    assert_eq!(report["ok"], false);
+    assert_eq!(
+        report["problems"],
+        json!([
+            {"path": "todo.d/bad name.md", "code": "bad-name",
+             "message": "expected <slug>.md, where the slug is letters, digits, '-' and '_'"},
+            {"path": "todo.d/titled.md", "code": "not-an-entry",
+             "message": "line 3: a heading; the entry's heading is its file name"},
+        ])
+    );
+
+    let output = run(tmp.path(), &["todo", "query"]);
+    assert_exit(&output, 1);
+    let text = stdout(&output);
+    assert!(
+        text.starts_with("todo.d: 2 fragments, 2 problems\n"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(
+            "\nProblems:\n\
+             todo.d/bad name.md: bad-name: expected <slug>.md, where the slug is letters, digits, '-' and '_'\n\
+             todo.d/titled.md: not-an-entry: line 3: a heading; the entry's heading is its file name\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn changelog_symlink_is_not_a_fragment_and_is_not_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "secret.txt", "- SECRET-CONTENTS\n");
+    fs::create_dir(tmp.path().join("changelog.d")).unwrap();
+    std::os::unix::fs::symlink(
+        "../secret.txt",
+        tmp.path().join("changelog.d/leak.added.md"),
+    )
+    .unwrap();
+
+    let output = run(tmp.path(), &["query"]);
+    assert_exit(&output, 1);
+    assert_eq!(
+        stdout(&output),
+        "changelog.d: 0 fragments, 1 problem\n\
+         \n\
+         Problems:\n\
+         changelog.d/leak.added.md: not-a-fragment: not a fragment: a symlink\n"
+    );
+
+    let output = run(tmp.path(), &["gather", "--version", "1.0.0", "--json"]);
+    assert_exit(&output, 1);
+    assert_eq!(json(&output)["refused"], "problems");
+    assert!(!tmp.path().join("CHANGELOG.md").exists());
+    assert!(tmp.path().join("changelog.d/leak.added.md").is_symlink());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("secret.txt")).unwrap(),
+        "- SECRET-CONTENTS\n"
+    );
+}
+
+#[test]
+fn todo_symlink_is_not_a_fragment_and_is_not_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "secret.txt", "SECRET-CONTENTS\n");
+    fs::create_dir(tmp.path().join("todo.d")).unwrap();
+    std::os::unix::fs::symlink("../secret.txt", tmp.path().join("todo.d/leak.md")).unwrap();
+
+    let output = run(tmp.path(), &["todo", "query"]);
+    assert_exit(&output, 1);
+    assert_eq!(
+        stdout(&output),
+        "todo.d: 0 fragments, 1 problem\n\
+         \n\
+         Problems:\n\
+         todo.d/leak.md: not-a-fragment: not a fragment: a symlink\n"
+    );
+
+    let output = run(tmp.path(), &["todo", "gather", "--json"]);
+    assert_exit(&output, 1);
+    assert_eq!(json(&output)["refused"], "problems");
+    assert!(!tmp.path().join("TODO.md").exists());
+    assert!(tmp.path().join("todo.d/leak.md").is_symlink());
+}
+
+#[test]
+fn todo_query_without_a_directory_is_zero_fragments() {
+    let tmp = tempfile::tempdir().unwrap();
+    clean_fixture(tmp.path());
+    let output = run(tmp.path(), &["todo", "query"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "no todo.d or .todo.d: 0 fragments\n");
+    let output = run(tmp.path(), &["todo", "query", "--json"]);
+    assert_exit(&output, 0);
+    assert_eq!(
+        json(&output),
+        json!({"dir": null, "range": null, "fragments": [], "problems": [], "ok": true})
+    );
+}
+
+#[test]
+fn todo_query_finds_the_hidden_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), ".todo.d/a.md", "A.\n");
+    let output = run(tmp.path(), &["todo", "query", "--json"]);
+    assert_exit(&output, 0);
+    let report = json(&output);
+    assert_eq!(report["dir"], ".todo.d");
+    assert_eq!(report["fragments"][0]["path"], ".todo.d/a.md");
+}
+
+#[test]
+fn todo_both_directories_exit_three() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join("todo.d")).unwrap();
+    fs::create_dir(tmp.path().join(".todo.d")).unwrap();
+    for args in [&["todo", "query"][..], &["todo", "gather"]] {
+        let output = run(tmp.path(), args);
+        assert_exit(&output, 3);
+        assert_eq!(
+            stderr(&output),
+            "allthechanges: both todo.d and .todo.d exist; pass --dir\n"
+        );
+    }
+    let output = run(tmp.path(), &["--dir", ".todo.d", "todo", "query"]);
+    assert_exit(&output, 0);
+}
+
+#[test]
+fn todo_query_honours_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "deferred/a.md", "A.\n");
+    let output = run(
+        tmp.path(),
+        &["todo", "query", "--json", "--dir", "deferred"],
+    );
+    assert_exit(&output, 0);
+    let report = json(&output);
+    assert_eq!(report["dir"], "deferred");
+    assert_eq!(report["fragments"][0]["path"], "deferred/a.md");
+}
+
+#[test]
+fn todo_query_has_no_require() {
+    let tmp = tempfile::tempdir().unwrap();
+    for args in [
+        &["todo", "query", "--require"][..],
+        &["todo"],
+        &["todo", "gather", "--version", "1"],
+    ] {
+        let output = run(tmp.path(), args);
+        assert_exit(&output, 2);
+        assert!(!output.stderr.is_empty(), "{args:?}: {output:?}");
+    }
+}
+
+#[test]
+fn help_mentions_todo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = run(tmp.path(), &["--help"]);
+    assert_exit(&output, 0);
+    assert!(stdout(&output).contains("todo"), "{}", stdout(&output));
+    let output = run(tmp.path(), &["todo", "--help"]);
+    assert_exit(&output, 0);
+    let text = stdout(&output);
+    assert!(text.contains("query") && text.contains("gather"), "{text}");
+}
+
+#[test]
+fn todo_range_lists_only_fragments_added_in_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    seed_repo(root);
+    write(root, "todo.d/old.md", "Old.\n");
+    commit_all(root, "old fragment");
+    git(root, &["tag", "base"]);
+    write(root, "todo.d/new.md", "New.\n");
+    write(root, "todo.d/gone.md", "Gone.\n");
+    write(root, "todo.d/old.md", "Old, edited.\n");
+    commit_all(root, "new fragments");
+    fs::remove_file(root.join("todo.d/gone.md")).unwrap();
+
+    let output = run(root, &["todo", "query", "--json", "--range", "base..HEAD"]);
+    assert_exit(&output, 1);
+    let report = json(&output);
+    assert_eq!(report["range"], "base..HEAD");
+    assert_eq!(fragment_paths(&report), ["todo.d/new.md"]);
+    assert_eq!(
+        report["problems"],
+        json!([{
+            "path": "todo.d/gone.md",
+            "code": "missing",
+            "message": "added in base..HEAD but not present in the working tree",
+        }])
+    );
+
+    fs::remove_dir_all(root.join("todo.d")).unwrap();
+    let output = run(root, &["todo", "query", "--range", "base..HEAD"]);
+    assert_exit(&output, 1);
+    assert_eq!(
+        stdout(&output),
+        "no todo.d or .todo.d: 0 fragments\n\
+         \n\
+         Problems:\n\
+         todo.d/gone.md: missing: added in base..HEAD but not present in the working tree\n\
+         todo.d/new.md: missing: added in base..HEAD but not present in the working tree\n"
+    );
+
+    let output = run(root, &["todo", "query", "--range", "no-such-ref..HEAD"]);
+    assert_exit(&output, 3);
+    assert!(stderr(&output).contains("no-such-ref"), "{output:?}");
+}
+
+const TODO_EXISTING: &str = "\
+# TODO
+
+Preamble.
+
+## Open
+
+### beta
+
+Beta.
+
+### delta
+
+Delta.
+
+## Done
+
+### zzz
+
+Old.
+";
+
+const TODO_GATHERED: &str = "\
+# TODO
+
+Preamble.
+
+## Open
+
+### alpha
+
+Alpha.
+
+### beta
+
+Beta.
+
+### charlie
+
+Charlie.
+
+### delta
+
+Delta.
+
+### echo
+
+Echo.
+
+## Done
+
+### zzz
+
+Old.
+";
+
+fn todo_gather_fixture(root: &Path) {
+    write(root, "TODO.md", TODO_EXISTING);
+    write(root, "todo.d/echo.md", "Echo.\n");
+    write(root, "todo.d/alpha.md", "Alpha.\n");
+    write(root, "todo.d/charlie.md", "Charlie.\n");
+    write(root, "todo.d/.gitkeep", "");
+}
+
+#[test]
+fn todo_gather_writes_sorted_entries_and_deletes_the_fragments() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_gather_fixture(tmp.path());
+    let output = run(tmp.path(), &["todo", "gather", "--json"]);
+    assert_exit(&output, 0);
+    assert_eq!(
+        json(&output),
+        json!({
+            "todo": "TODO.md",
+            "created": false,
+            "dry_run": false,
+            "gathered": ["todo.d/alpha.md", "todo.d/charlie.md", "todo.d/echo.md"],
+            "rendered": "### alpha\n\nAlpha.\n\n### charlie\n\nCharlie.\n\n### echo\n\nEcho.\n",
+            "problems": [],
+            "refused": null,
+            "ok": true,
+        })
+    );
+    assert_eq!(read(tmp.path(), "TODO.md"), TODO_GATHERED);
+    assert_eq!(left_in(tmp.path(), "todo.d"), [".gitkeep"]);
+}
+
+#[test]
+fn todo_gather_for_humans_names_what_it_deleted() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_gather_fixture(tmp.path());
+    let output = run(tmp.path(), &["todo", "gather"]);
+    assert_exit(&output, 0);
+    assert_eq!(
+        stdout(&output),
+        "gathered 3 fragments into TODO.md\n\
+         deleted todo.d/alpha.md\n\
+         deleted todo.d/charlie.md\n\
+         deleted todo.d/echo.md\n"
+    );
+}
+
+#[test]
+fn todo_gather_creates_an_absent_todo_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_fixture(tmp.path());
+    let output = run(tmp.path(), &["todo", "gather", "--dry-run"]);
+    assert_exit(&output, 0);
+    assert_eq!(
+        stdout(&output),
+        "dry run: would write to TODO.md (created):\n\
+         \n\
+         ### audit\n\nAudit the dependency graph.\n\nSecond paragraph.\n\
+         \n\
+         ### scan-loops\n\nDetect a symlink cycle.\n"
+    );
+    assert!(!tmp.path().join("TODO.md").exists());
+    assert_eq!(left_in(tmp.path(), "todo.d").len(), 3);
+
+    let output = run(tmp.path(), &["todo", "gather"]);
+    assert_exit(&output, 0);
+    assert!(
+        stdout(&output).starts_with("gathered 2 fragments into TODO.md (created)\n"),
+        "{output:?}"
+    );
+    assert_eq!(
+        read(tmp.path(), "TODO.md"),
+        "# TODO\n\n## Open\n\n\
+         ### audit\n\nAudit the dependency graph.\n\nSecond paragraph.\n\n\
+         ### scan-loops\n\nDetect a symlink cycle.\n"
+    );
+}
+
+#[test]
+fn todo_gather_dry_run_changes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_gather_fixture(tmp.path());
+    let output = run(tmp.path(), &["todo", "gather", "--dry-run", "--json"]);
+    assert_exit(&output, 0);
+    let report = json(&output);
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["created"], false);
+    assert_eq!(read(tmp.path(), "TODO.md"), TODO_EXISTING);
+    assert_eq!(left_in(tmp.path(), "todo.d").len(), 4);
+}
+
+#[test]
+fn todo_gather_refuses_a_slug_already_present() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_gather_fixture(tmp.path());
+    write(tmp.path(), "todo.d/beta.md", "Beta again.\n");
+    let output = run(tmp.path(), &["todo", "gather", "--json"]);
+    assert_exit(&output, 1);
+    let report = json(&output);
+    assert_eq!(report["refused"], "problems");
+    assert_eq!(report["ok"], false);
+    assert_eq!(
+        report["problems"],
+        json!([{
+            "path": "todo.d/beta.md",
+            "code": "present",
+            "message": "TODO.md already has an entry \"### beta\"",
+        }])
+    );
+    let output = run(tmp.path(), &["todo", "gather"]);
+    assert_exit(&output, 1);
+    assert_eq!(
+        stdout(&output),
+        "nothing gathered: 1 problem in the fragments\n\
+         \n\
+         Problems:\n\
+         todo.d/beta.md: present: TODO.md already has an entry \"### beta\"\n"
+    );
+    assert_eq!(read(tmp.path(), "TODO.md"), TODO_EXISTING);
+    assert_eq!(left_in(tmp.path(), "todo.d").len(), 5);
+}
+
+#[test]
+fn todo_gather_refuses_on_problems() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_gather_fixture(tmp.path());
+    write(tmp.path(), "todo.d/open.md", "Text.\n\n```\ncode\n");
+    let output = run(tmp.path(), &["todo", "gather", "--json"]);
+    assert_exit(&output, 1);
+    let report = json(&output);
+    assert_eq!(report["refused"], "problems");
+    assert_eq!(report["problems"][0]["code"], "not-an-entry");
+    assert_eq!(
+        report["problems"][0]["message"],
+        "line 3: code fence not closed"
+    );
+    assert_eq!(read(tmp.path(), "TODO.md"), TODO_EXISTING);
+    assert_eq!(left_in(tmp.path(), "todo.d").len(), 5);
+}
+
+#[test]
+fn todo_gather_refuses_with_nothing_to_gather() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = run(tmp.path(), &["todo", "gather", "--json"]);
+    assert_exit(&output, 1);
+    let report = json(&output);
+    assert_eq!(report["refused"], "nothing-to-gather");
+    assert_eq!(report["rendered"], Value::Null);
+    let output = run(tmp.path(), &["todo", "gather"]);
+    assert_exit(&output, 1);
+    assert_eq!(
+        stdout(&output),
+        "nothing gathered: no fragments to gather\n"
+    );
+    assert!(!tmp.path().join("TODO.md").exists());
+}
+
+#[test]
+fn todo_gather_honours_dir_and_todo() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "deferred/a.md", "A.\n");
+    write(tmp.path(), "docs/TODO.md", "# Work\n\n## Open\n");
+    let output = run(
+        tmp.path(),
+        &[
+            "--dir",
+            "deferred",
+            "todo",
+            "gather",
+            "--todo",
+            "docs/TODO.md",
+        ],
+    );
+    assert_exit(&output, 0);
+    assert_eq!(
+        stdout(&output),
+        "gathered 1 fragment into docs/TODO.md\ndeleted deferred/a.md\n"
+    );
+    assert_eq!(
+        read(tmp.path(), "docs/TODO.md"),
+        "# Work\n\n## Open\n\n### a\n\nA.\n"
+    );
+}
+
+#[test]
+fn todo_gather_without_an_open_section_exits_three() {
+    let tmp = tempfile::tempdir().unwrap();
+    todo_fixture(tmp.path());
+    write(tmp.path(), "TODO.md", "# TODO\n\n## Later\n");
+    let output = run(tmp.path(), &["todo", "gather"]);
+    assert_exit(&output, 3);
+    assert_eq!(
+        stderr(&output),
+        "allthechanges: TODO.md: no \"## Open\" section\n"
+    );
+    assert_eq!(read(tmp.path(), "TODO.md"), "# TODO\n\n## Later\n");
+    assert_eq!(left_in(tmp.path(), "todo.d").len(), 3);
 }

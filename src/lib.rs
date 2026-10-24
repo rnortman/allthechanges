@@ -1,5 +1,6 @@
-//! Changelog fragments: one file per change under `changelog.d/`, linted and
-//! listed by `query`, folded into `CHANGELOG.md` by `gather`.
+//! Changelog and TODO fragments: one file per change under `changelog.d/`
+//! or per deferral under `todo.d/`, linted and listed by `query`, folded
+//! into `CHANGELOG.md` or `TODO.md` by `gather`.
 //!
 //! Every behaviour lives in this library; the `allthechanges` binary parses
 //! arguments, calls it and maps outcomes to exit codes.
@@ -13,6 +14,8 @@ pub mod fragment;
 pub mod git;
 pub mod report;
 pub mod scan;
+pub mod target;
+pub mod todo;
 
 /// An operational failure: the environment, not a fragment, is at fault.
 /// The binary reports it on stderr and exits 3.
@@ -22,17 +25,18 @@ pub enum Error {
     Io { path: PathBuf, source: io::Error },
     /// The fragment directory named exists but is not a directory.
     NotADirectory(PathBuf),
-    /// Both default fragment directories exist and no `--dir` chose one.
-    BothDirectories,
+    /// Both default fragment directories, named, exist and no `--dir` chose
+    /// one.
+    BothDirectories([&'static str; 2]),
     /// `git` could not be started.
     GitSpawn(io::Error),
     /// `git` ran and failed; its trimmed stderr.
     Git(String),
-    /// The changelog cannot be read as a changelog.
-    Changelog { path: PathBuf, reason: &'static str },
-    /// The changelog was written, then deleting a gathered fragment failed.
+    /// The file a gather writes into cannot be read as one.
+    Target { path: PathBuf, reason: &'static str },
+    /// The target was written, then deleting a gathered fragment failed.
     Delete {
-        changelog: PathBuf,
+        target: PathBuf,
         deleted: Vec<PathBuf>,
         /// The fragment that failed first, then the ones not attempted.
         remaining: Vec<PathBuf>,
@@ -55,22 +59,22 @@ impl fmt::Display for Error {
         match self {
             Error::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Error::NotADirectory(path) => write!(f, "{}: not a directory", path.display()),
-            Error::BothDirectories => {
-                f.write_str("both changelog.d and .changelog.d exist; pass --dir")
+            Error::BothDirectories([first, second]) => {
+                write!(f, "both {first} and {second} exist; pass --dir")
             }
             Error::GitSpawn(source) => write!(f, "cannot run git: {source}"),
             Error::Git(message) => f.write_str(message),
-            Error::Changelog { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Error::Target { path, reason } => write!(f, "{}: {reason}", path.display()),
             Error::Delete {
-                changelog,
+                target,
                 deleted,
                 remaining,
                 source,
             } => write!(
                 f,
-                "{} holds the gathered section, but deleting {} failed: {source}; \
+                "{} holds the gathered fragments, but deleting {} failed: {source}; \
                  deleted: {}; delete by hand: {}",
-                changelog.display(),
+                target.display(),
                 remaining[0].display(),
                 list(deleted),
                 list(remaining),
