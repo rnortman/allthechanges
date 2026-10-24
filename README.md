@@ -1,13 +1,18 @@
 # allthechanges
 
-Changelog fragments for [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-files. Every change carries its changelog entry as a file of its own under
+Changelog and TODO fragments. For
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) files, every change carries its changelog entry as a file of its own under
 `changelog.d/`, instead of an edit to the top of `CHANGELOG.md`, so branches
 developed in parallel never conflict on the changelog. At release time
 `allthechanges gather` folds the fragments into a new release section of
 `CHANGELOG.md` and deletes them.
 
-Two commands:
+A `TODO.md` that every deferral appends to has the same conflict, and the
+same fix: each new entry is a file of its own under `todo.d/`, and
+`allthechanges todo gather` folds them into `TODO.md`, each at its
+alphabetical place (see [TODO fragments](#todo-fragments)).
+
+Two commands for the changelog:
 
 - `allthechanges query` lints and lists the fragments; with `--range` it
   lists only those added in a git range, which is the CI check "this pull
@@ -63,8 +68,10 @@ printf -- '- Fix the login timeout when the server is slow.\n' > changelog.d/log
 Anything else is a lint problem, never rewritten: prose without a `- `,
 `* ` bullets, headings, an empty file, a name that does not parse. Files
 whose names begin with `.` are ignored, so `changelog.d/.gitkeep` keeps an
-otherwise empty directory in git. A missing `changelog.d` is not an error:
-it holds no fragments.
+otherwise empty directory in git. A symlink in the directory is not a
+fragment (`not-a-fragment`) and is never read; the directory itself is
+found by following symlinks like any other path. A missing `changelog.d`
+is not an error: it holds no fragments.
 
 ## `query`
 
@@ -137,14 +144,109 @@ earlier releases and link-reference definitions stay as they are. A missing
   at that temporary path is an error, left untouched.
 - `--dry-run` prints the section and writes and deletes nothing.
 
+## TODO fragments
+
+A TODO fragment is a file in `todo.d/` (or `.todo.d/`; a repository with
+both is an error) named `<slug>.md`, where `slug` is letters, digits, `-`
+and `_` — the same characters a `TODO(slug)` comment in code carries. Its
+body is the entry's text, written into `TODO.md` under a `### <slug>`
+heading:
+
+```sh
+mkdir -p todo.d
+printf 'Detect a symlink cycle under the fragment directory.
+' > todo.d/scan-symlink-loops.md
+```
+
+The body is paragraphs, lists and code blocks, with three rules, so that
+the next `todo gather` still finds every section and entry in the file it
+wrote:
+
+- the first line is text, not blank;
+- no ATX heading (`#` to `######` in column 0, then a space or the end of
+  the line) outside a fenced code block — the entry's heading is its file
+  name; `#42` and `#[derive(Debug)]` are prose;
+- every code fence (a line starting with three backticks or three tildes)
+  is closed.
+
+Anything else is the lint problem `not-an-entry`, naming the line, never
+rewritten. Names beginning with `.` are ignored and a missing `todo.d` holds
+no fragments, as for changelog fragments. Every other `<slug>.md` in the
+directory is a fragment, `README.md` included: notes about the directory
+kept inside it take a leading `.` (`.README.md`). A symlink is
+`not-a-fragment`, as for changelog fragments.
+
+`TODO.md` keeps its entries in a `## Open` section, one `### <key>` heading
+each:
+
+```markdown
+# TODO
+
+## Open
+
+### scan-symlink-loops
+
+Detect a symlink cycle under the fragment directory.
+```
+
+## `todo query`
+
+```
+allthechanges [--dir <path>] [--json] todo query [--range <git-range>]
+```
+
+Lists every TODO fragment in slug order, then the problems:
+
+```
+$ allthechanges todo query
+todo.d: 2 fragments, 1 problem
+
+### dependency-audit-lane
+
+A license and advisory audit of the Rust dependency graph.
+
+### scan-symlink-loops
+
+Detect a symlink cycle under the fragment directory.
+
+Problems:
+todo.d/bad slug.md: bad-name: expected <slug>.md, where the slug is letters, digits, '-' and '_'
+```
+
+`--range` works as for `query`. There is no `--require`: no pull request
+is required to add a TODO. `--dir` names the TODO fragment directory; by
+default it is `todo.d`, else `.todo.d`.
+
+## `todo gather`
+
+```
+allthechanges [--dir <path>] [--json] todo gather [--todo <path>] [--dry-run]
+```
+
+Lints first and writes nothing if there is any problem, if there are no
+fragments, or if `TODO.md` already has an entry for a fragment's slug (the
+problem `present`, on that fragment). Otherwise it writes each fragment as
+`### <slug>`, a blank line and its body into the `## Open` section of
+`TODO.md`, before the first entry whose heading sorts after the slug (byte
+order), else at the end of the section (the next `# ` or `## ` heading, or
+the end of the file), and then deletes the fragments it gathered. A `TODO.md` whose entries are sorted stays sorted. Nothing else
+changes: the title, the preamble, every existing entry and every other
+section stay as they are, and nothing is reordered. A missing `TODO.md` is
+created as `# TODO` and `## Open`; one without a `## Open` section, or with
+more than one, is an error.
+
+- `--todo` defaults to `TODO.md` in the current directory, with the same
+  file rules as `--changelog`.
+- `--dry-run` prints the entries and writes and deletes nothing.
+
 ## Exit codes and streams
 
 | Code | Meaning |
 |---|---|
 | 0 | Done; for `query`, no problems and (with `--require`) at least one fragment. |
-| 1 | The check failed: lint problems, `--require` with no fragment, or `gather` refused. |
+| 1 | The check failed: lint problems, `--require` with no fragment, or `gather` or `todo gather` refused. |
 | 2 | Usage error. |
-| 3 | Operational error: an unreadable file, git failed or absent, not a git repository, both `changelog.d` and `.changelog.d` present, `CHANGELOG.md` not UTF-8 or with CRLF line endings. |
+| 3 | Operational error: an unreadable file, git failed or absent, not a git repository, both `changelog.d` and `.changelog.d` (or `todo.d` and `.todo.d`) present, `CHANGELOG.md` or `TODO.md` not a regular file, not UTF-8 or with CRLF line endings, `TODO.md` without exactly one `## Open` section. |
 
 stdout carries the report and nothing else; stderr carries diagnostics
 only. On exit 0 and 1 stderr is empty and stdout holds the report; on exit
@@ -185,7 +287,7 @@ and a newline.
 `dir` is `null` when neither default directory exists. `ok` is true when
 there are no problems and, under `--require`, at least one fragment. The
 problem codes are `bad-name`, `unknown-section`, `not-a-fragment`,
-`not-utf8`, `empty`, `not-a-list` and `missing`.
+`not-utf8`, `empty`, `not-a-list`, `not-an-entry`, `present` and `missing`.
 
 `gather`:
 
@@ -208,6 +310,46 @@ problem codes are `bad-name`, `unknown-section`, `not-a-fragment`,
 `refused` is `null` or why nothing was written: `problems` (listed in
 `problems`), `nothing-to-gather`, or `version-present` — the last is what a
 release bot sees when it re-runs after the release was already gathered.
+
+`todo query`:
+
+```json
+{
+  "dir": "todo.d",
+  "range": null,
+  "fragments": [
+    {
+      "path": "todo.d/scan-symlink-loops.md",
+      "slug": "scan-symlink-loops",
+      "body": ["Detect a symlink cycle under the fragment directory."]
+    }
+  ],
+  "problems": [],
+  "ok": true
+}
+```
+
+`ok` is true when there are no problems.
+
+`todo gather`:
+
+```json
+{
+  "todo": "TODO.md",
+  "created": false,
+  "dry_run": false,
+  "gathered": ["todo.d/scan-symlink-loops.md"],
+  "rendered": "### scan-symlink-loops\n\nDetect a symlink cycle under the fragment directory.\n",
+  "problems": [],
+  "refused": null,
+  "ok": true
+}
+```
+
+`rendered` is every entry in slug order, blank-line separated, each exactly
+as inserted. `refused` is `null`, `problems` (the fragments' problems and a
+`present` for every slug `TODO.md` already has, listed in `problems`) or
+`nothing-to-gather`.
 
 ## In CI: every pull request adds a fragment
 
@@ -263,11 +405,12 @@ On a branch:
 
 ```sh
 make run ARGS="gather --version X.Y.Z"
+make run ARGS="todo gather"
 ```
 
 Set `version` in `Cargo.toml` and `VERSION` in `BUILD.bazel` to `X.Y.Z`,
-then run `make repin`. Commit the gathered `CHANGELOG.md`, the deleted
-fragments, both manifests and every lock file `make repin` changed —
+then run `make repin`. Commit the gathered `CHANGELOG.md` and `TODO.md`, the
+deleted fragments, both manifests and every lock file `make repin` changed —
 `Cargo.lock` and `cargo-bazel-lock.json` always change with the package
 version, and `make publish` refuses a stale `Cargo.lock`. Open a pull
 request labelled `skip-changelog` and merge it. Tag the resulting `main`

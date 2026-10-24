@@ -7,25 +7,26 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use crate::Error;
-use crate::scan::{DEFAULT_DIRS, Scan, scan_added};
+use crate::fragment::Kind;
+use crate::scan::{Scan, scan_added};
 
 /// Lints and lists the fragments added to `dir` in `range`, read from the
 /// working tree. git is asked whether or not `dir` exists, so a bad range or
 /// a working directory outside a repository is an [`Error`] either way; a
 /// fragment added in the range to a directory now absent is `missing`.
 /// A `dir` that is not a directory is an [`Error`].
-pub fn scan_range(dir: &Path, range: &str) -> Result<Scan, Error> {
+pub fn scan_range<K: Kind>(dir: &Path, range: &str) -> Result<Scan<K>, Error> {
     let (base, below) = existing_base(dir)?;
     let names = added_in_range(&base, &below, range)?;
     scan_added(dir, &names, range)
 }
 
-/// Range mode when no fragment directory exists: both default names are
+/// Range mode when no fragment directory exists: both of `K::DIRS` are
 /// asked for, so a fragment added under either is `missing`.
-pub fn scan_range_defaults(range: &str) -> Result<Scan, Error> {
+pub fn scan_range_defaults<K: Kind>(range: &str) -> Result<Scan<K>, Error> {
     let mut scan = Scan::default();
-    for name in DEFAULT_DIRS {
-        let found = scan_range(Path::new(name), range)?;
+    for name in K::DIRS {
+        let found = scan_range::<K>(Path::new(name), range)?;
         scan.fragments.extend(found.fragments);
         scan.problems.extend(found.problems);
     }

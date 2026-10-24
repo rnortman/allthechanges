@@ -6,24 +6,24 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::Error;
-use crate::fragment::{Finding, FragmentName, Problem, ProblemCode, Section, parse_body};
-
-/// The default fragment directories, in the order they are looked for.
-pub const DEFAULT_DIRS: [&str; 2] = ["changelog.d", ".changelog.d"];
+use crate::fragment::{Finding, Kind, Problem, ProblemCode};
 
 /// Chooses the fragment directory. An explicit `--dir` is returned as given,
-/// whether or not it exists. Otherwise the one default directory that exists
-/// under `base`, joined to `base`; `None` when neither does.
-pub fn locate(base: &Path, explicit: Option<&Path>) -> Result<Option<PathBuf>, Error> {
+/// whether or not it exists. Otherwise the one of `K::DIRS` that exists
+/// under `base`, joined to `base`; `None` when neither does. A directory
+/// that is a symlink is followed.
+// TODO(security-symlinked-fragment-directory-read-and-deleted): refuse a
+// default fragment directory that is a symlink.
+pub fn locate<K: Kind>(base: &Path, explicit: Option<&Path>) -> Result<Option<PathBuf>, Error> {
     if let Some(dir) = explicit {
         return Ok(Some(dir.to_path_buf()));
     }
     let mut found = None;
-    for name in DEFAULT_DIRS {
+    for name in K::DIRS {
         let path = base.join(name);
         if path.try_exists().map_err(Error::io(&path))? {
             if found.is_some() {
-                return Err(Error::BothDirectories);
+                return Err(Error::BothDirectories(K::DIRS));
             }
             found = Some(path);
         }
@@ -33,51 +33,33 @@ pub fn locate(base: &Path, explicit: Option<&Path>) -> Result<Option<PathBuf>, E
 
 /// A fragment read from disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fragment {
+pub struct Fragment<K: Kind> {
     /// The fragment directory joined with the file name.
     pub path: PathBuf,
-    pub name: FragmentName,
+    pub name: K::Name,
     pub body: Vec<String>,
 }
 
-/// The sections that have fragments, in canonical order, each with its
-/// fragments in the order given.
-pub(crate) fn by_section(
-    fragments: &[Fragment],
-) -> impl Iterator<Item = (Section, Vec<&Fragment>)> {
-    Section::ALL.into_iter().filter_map(move |section| {
-        let in_section: Vec<&Fragment> = fragments
-            .iter()
-            .filter(|f| f.name.section == section)
-            .collect();
-        (!in_section.is_empty()).then_some((section, in_section))
-    })
-}
-
 /// Every fragment and every problem found, each in report order.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Scan {
-    pub fragments: Vec<Fragment>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scan<K: Kind> {
+    pub fragments: Vec<Fragment<K>>,
     pub problems: Vec<Problem>,
 }
 
-impl Scan {
+impl<K: Kind> Default for Scan<K> {
+    fn default() -> Self {
+        Scan {
+            fragments: Vec::new(),
+            problems: Vec::new(),
+        }
+    }
+}
+
+impl<K: Kind> Scan<K> {
     /// Puts fragments and problems in report order.
     pub(crate) fn sort(&mut self) {
-        self.fragments.sort_by(|a, b| {
-            (
-                a.name.section,
-                a.name.date.is_none(),
-                &a.name.date,
-                &a.name.slug,
-            )
-                .cmp(&(
-                    b.name.section,
-                    b.name.date.is_none(),
-                    &b.name.date,
-                    &b.name.slug,
-                ))
-        });
+        self.fragments.sort_by(|a, b| a.name.cmp(&b.name));
         self.problems.sort_by(|a, b| a.path.cmp(&b.path));
     }
 }
@@ -85,8 +67,8 @@ impl Scan {
 /// Reads every entry of `dir`. A directory that does not exist holds no
 /// fragments; one that is not a directory, or any I/O failure other than
 /// absence, is an [`Error`]. Names beginning with `.` are ignored; a symlink
-/// that does not resolve to a file is `not-a-fragment`.
-pub fn scan(dir: &Path) -> Result<Scan, Error> {
+/// is `not-a-fragment`.
+pub fn scan<K: Kind>(dir: &Path) -> Result<Scan<K>, Error> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Scan::default()),
@@ -112,11 +94,11 @@ pub fn scan(dir: &Path) -> Result<Scan, Error> {
 /// Treats `names`, the files git reports as added to `dir` in `range` and
 /// relative to it, as the directory listing; a name absent from the working
 /// tree is `missing`.
-pub(crate) fn scan_added<N: AsRef<OsStr>>(
+pub(crate) fn scan_added<K: Kind, N: AsRef<OsStr>>(
     dir: &Path,
     names: &[N],
     range: &str,
-) -> Result<Scan, Error> {
+) -> Result<Scan<K>, Error> {
     let mut scan = Scan::default();
     for name in names {
         classify(&mut scan, dir, name.as_ref(), || {
@@ -132,11 +114,11 @@ pub(crate) fn scan_added<N: AsRef<OsStr>>(
 
 /// Classifies the listed entry `name` of `dir`: ignored when it begins with
 /// `.`; `not-a-fragment` when its name is not UTF-8, it lies inside a
-/// subdirectory, it is not a regular file, or it is a symlink that does not
-/// resolve to one; the `absent` finding when nothing is at its path;
+/// subdirectory, it is a symlink (never read, whatever it resolves to) or it
+/// is not a regular file; the `absent` finding when nothing is at its path;
 /// otherwise read as a fragment.
-fn classify(
-    scan: &mut Scan,
+fn classify<K: Kind>(
+    scan: &mut Scan<K>,
     dir: &Path,
     name: &OsStr,
     absent: impl FnOnce() -> Finding,
@@ -152,23 +134,19 @@ fn classify(
     if name.contains('/') {
         return not_a_fragment(scan, display, "inside a subdirectory");
     }
-    match fs::metadata(&path) {
+    match fs::symlink_metadata(&path) {
+        Ok(m) if m.is_symlink() => not_a_fragment(scan, display, "a symlink"),
         Ok(m) if m.is_file() => read_fragment(scan, path, name, display),
         Ok(_) => not_a_fragment(scan, display, "not a regular file"),
-        Err(e) => match fs::symlink_metadata(&path) {
-            Ok(m) if m.is_symlink() => {
-                not_a_fragment(scan, display, "symlink does not resolve to a file")
-            }
-            Err(gone) if gone.kind() == io::ErrorKind::NotFound => {
-                scan.problems.push(absent().at(display));
-                Ok(())
-            }
-            _ => Err(Error::io(&path)(e)),
-        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            scan.problems.push(absent().at(display));
+            Ok(())
+        }
+        Err(e) => Err(Error::io(&path)(e)),
     }
 }
 
-fn not_a_fragment(scan: &mut Scan, display: String, why: &str) -> Result<(), Error> {
+fn not_a_fragment<K: Kind>(scan: &mut Scan<K>, display: String, why: &str) -> Result<(), Error> {
     scan.problems.push(
         Finding::new(ProblemCode::NotAFragment, format!("not a fragment: {why}")).at(display),
     );
@@ -177,13 +155,13 @@ fn not_a_fragment(scan: &mut Scan, display: String, why: &str) -> Result<(), Err
 
 /// Parses the name of the regular file at `path`, then its contents, and
 /// records the fragment or the first problem found.
-fn read_fragment(
-    scan: &mut Scan,
+fn read_fragment<K: Kind>(
+    scan: &mut Scan<K>,
     path: PathBuf,
     file_name: &str,
     display: String,
 ) -> Result<(), Error> {
-    let name = match FragmentName::parse(file_name) {
+    let name = match K::parse_name(file_name) {
         Ok(name) => name,
         Err(finding) => {
             scan.problems.push(finding.at(display));
@@ -191,7 +169,7 @@ fn read_fragment(
         }
     };
     let bytes = fs::read(&path).map_err(Error::io(&path))?;
-    match parse_body(&bytes) {
+    match K::parse_body(&bytes) {
         Ok(body) => scan.fragments.push(Fragment { path, name, body }),
         Err(finding) => scan.problems.push(finding.at(display)),
     }
