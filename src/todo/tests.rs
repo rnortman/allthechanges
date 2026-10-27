@@ -163,7 +163,7 @@ fn scan_of(dir: &Path, slugs: &[&str]) -> Scan<Todo> {
 }
 
 fn entry(slug: &str) -> String {
-    format!("### {slug}\n\nBody of {slug}.\n")
+    format!("## `{slug}`\n\nBody of {slug}.\n")
 }
 
 /// A tempdir holding the fragments on disk and a TODO path in it, written
@@ -199,31 +199,21 @@ const SORTED: &str = "\
 
 Preamble.
 
-## Open
-
-Open intro.
-
-### beta
+## `beta`
 
 Body of beta.
 
-### delta
+## `delta`
 
 Body of delta.
-
-## Done
-
-### alpha
-
-Old.
 ";
 
 #[test]
-fn entries_go_before_the_first_greater_key_or_at_the_section_end() {
+fn entries_go_before_the_first_greater_slug_or_at_the_end_of_the_file() {
     assert_eq!(
         gathered(SORTED, &["alpha", "charlie", "echo"]),
         format!(
-            "# TODO\n\nPreamble.\n\n## Open\n\nOpen intro.\n\n{}\n### beta\n\nBody of beta.\n\n{}\n### delta\n\nBody of delta.\n\n{}\n## Done\n\n### alpha\n\nOld.\n",
+            "# TODO\n\nPreamble.\n\n{}\n## `beta`\n\nBody of beta.\n\n{}\n## `delta`\n\nBody of delta.\n\n{}",
             entry("alpha"),
             entry("charlie"),
             entry("echo"),
@@ -233,11 +223,11 @@ fn entries_go_before_the_first_greater_key_or_at_the_section_end() {
 
 #[test]
 fn entries_sharing_an_insertion_line_go_in_slug_order() {
-    let existing = "# TODO\n\n## Open\n\n### m\n\nM.\n";
+    let existing = "# TODO\n\n## `m`\n\nM.\n";
     assert_eq!(
         gathered(existing, &["c", "a", "b"]),
         format!(
-            "# TODO\n\n## Open\n\n{}\n{}\n{}\n### m\n\nM.\n",
+            "# TODO\n\n{}\n{}\n{}\n## `m`\n\nM.\n",
             entry("a"),
             entry("b"),
             entry("c")
@@ -246,32 +236,38 @@ fn entries_sharing_an_insertion_line_go_in_slug_order() {
 }
 
 #[test]
-fn an_empty_section_receives_entries_after_its_preamble() {
-    let existing = "# TODO\n\n## Open\n\nNothing yet.\n\n\n## Done\n";
+fn slugs_sort_in_byte_order() {
+    let existing = "# TODO\n\n## `m`\n\nM.\n";
     assert_eq!(
-        gathered(existing, &["x"]),
-        format!(
-            "# TODO\n\n## Open\n\nNothing yet.\n\n{}\n## Done\n",
-            entry("x")
-        )
+        gathered(existing, &["A", "n"]),
+        format!("# TODO\n\n{}\n## `m`\n\nM.\n\n{}", entry("A"), entry("n"))
     );
 }
 
 #[test]
-fn open_last_with_trailing_blank_lines_ends_with_one_newline() {
+fn a_file_without_entries_receives_them_after_its_preamble() {
+    let existing = "# TODO\n\nNothing yet.\n\n\n";
     assert_eq!(
-        gathered("# TODO\n\n## Open\n\n\n\n", &["x"]),
-        format!("# TODO\n\n## Open\n\n{}", entry("x"))
+        gathered(existing, &["x"]),
+        format!("# TODO\n\nNothing yet.\n\n{}", entry("x"))
+    );
+}
+
+#[test]
+fn trailing_blank_lines_or_no_final_newline_end_with_one_newline() {
+    assert_eq!(
+        gathered("# TODO\n\n\n\n", &["x"]),
+        format!("# TODO\n\n{}", entry("x"))
     );
     assert_eq!(
-        gathered("# TODO\n\n## Open", &["x"]),
-        format!("# TODO\n\n## Open\n\n{}", entry("x"))
+        gathered("# TODO", &["x"]),
+        format!("# TODO\n\n{}", entry("x"))
     );
 }
 
 #[test]
 fn split_gathers_give_the_same_file() {
-    let base = "# TODO\n\n## Open\n\n### m\n\nM.\n";
+    let base = "# TODO\n\n## `m`\n\nM.\n";
     let once = gathered(base, &["a", "n", "z"]);
     let twice = gathered(&gathered(base, &["n"]), &["a", "z"]);
     assert_eq!(once, twice);
@@ -279,23 +275,34 @@ fn split_gathers_give_the_same_file() {
 
 #[test]
 fn an_unsorted_file_is_not_reordered() {
-    let existing = "## Open\n\n### z\n\nZ.\n\n### b\n\nB.\n";
+    let existing = "## `z`\n\nZ.\n\n## b\n\nB.\n";
     assert_eq!(
         gathered(existing, &["c"]),
-        format!("## Open\n\n{}\n### z\n\nZ.\n\n### b\n\nB.\n", entry("c"))
+        format!("{}\n## `z`\n\nZ.\n\n## b\n\nB.\n", entry("c"))
     );
 }
 
 #[test]
-fn keys_are_trimmed_and_not_required_to_be_slugs() {
-    let existing = "## Open\n\n### Some title  \n\nT.\n\n#### m-sub\n\n### n\n";
+fn bare_and_backticked_headings_are_both_entries() {
+    let existing = "# TODO\n\n## beta\n\nB.\n\n## `delta`\n\nD.\n";
     assert_eq!(
-        gathered(existing, &["A", "m"]),
+        gathered(existing, &["charlie"]),
         format!(
-            "## Open\n\n{}\n### Some title  \n\nT.\n\n#### m-sub\n\n{}\n### n\n",
-            entry("A"),
-            entry("m")
+            "# TODO\n\n## beta\n\nB.\n\n{}\n## `delta`\n\nD.\n",
+            entry("charlie")
         )
+    );
+    let (_tmp, scan, path) = on_disk(&["beta", "delta"], Some(existing));
+    let Outcome::Refused { present, .. } = gather(&scan, &target(&path, false)).unwrap() else {
+        panic!("gathered");
+    };
+    let messages: Vec<String> = present.into_iter().map(|p| p.message).collect();
+    assert_eq!(
+        messages,
+        [
+            format!("{} already has an entry `beta` at line 3", path.display()),
+            format!("{} already has an entry `delta` at line 7", path.display()),
+        ]
     );
 }
 
@@ -309,14 +316,12 @@ fn fences_hide_headings_from_the_gather() {
 ### z
 ```
 
+## `y`
+
+~~~
 ## Open
-
+# Archive
 ~~~
-### z
-## Done
-~~~
-
-### y
 ";
     assert_eq!(
         gathered(existing, &["z"]),
@@ -380,54 +385,13 @@ fn a_present_slug_refuses_every_fragment_and_names_it() {
         [Problem {
             path: scan.fragments[1].path.display().to_string(),
             code: ProblemCode::Present,
-            message: format!("{} already has an entry \"### beta\"", path.display()),
+            message: format!("{} already has an entry `beta` at line 5", path.display()),
         }]
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), SORTED);
     for f in &scan.fragments {
         assert!(f.path.exists(), "{}", f.path.display());
     }
-}
-
-#[test]
-fn an_entry_outside_open_is_not_present() {
-    assert_eq!(
-        gathered(SORTED, &["alpha"]),
-        format!(
-            "# TODO\n\nPreamble.\n\n## Open\n\nOpen intro.\n\n{}\n### beta\n\nBody of beta.\n\n### delta\n\nBody of delta.\n\n## Done\n\n### alpha\n\nOld.\n",
-            entry("alpha"),
-        )
-    );
-}
-
-#[test]
-fn a_key_outside_open_is_not_an_insertion_point() {
-    let existing = "# TODO\n\n## Open\n\n### m\n\nM.\n\n## Done\n\n### zz\n\nOld.\n";
-    assert_eq!(
-        gathered(existing, &["zulu"]),
-        format!(
-            "# TODO\n\n## Open\n\n### m\n\nM.\n\n{}\n## Done\n\n### zz\n\nOld.\n",
-            entry("zulu")
-        )
-    );
-}
-
-#[test]
-fn a_level_one_heading_ends_the_open_section() {
-    let existing = "# TODO\n\n## Open\n\n### b\n\nB.\n\n# Archive\n\n### old\n\nOld.\n";
-    assert_eq!(
-        gathered(existing, &["a", "z"]),
-        format!(
-            "# TODO\n\n## Open\n\n{}\n### b\n\nB.\n\n{}\n# Archive\n\n### old\n\nOld.\n",
-            entry("a"),
-            entry("z")
-        )
-    );
-    let (_tmp, scan, path) = on_disk(&["old"], Some(existing));
-    assert!(matches!(
-        gather(&scan, &target(&path, false)).unwrap(),
-        Outcome::Gathered { .. }
-    ));
 }
 
 #[test]
@@ -454,20 +418,46 @@ fn problems_and_nothing_to_gather_refuse_before_reading() {
 }
 
 #[test]
-fn open_must_appear_exactly_once() {
-    for (existing, reason) in [
-        ("# TODO\n\n## Opened\n", "no \"## Open\" section"),
-        ("# TODO\n\n```\n## Open\n```\n", "no \"## Open\" section"),
+fn a_heading_that_is_not_the_title_or_an_entry_is_a_layout_error() {
+    const OPEN: &str =
+        "a \"## Open\" section: entries go directly under the title as \"## <slug>\"";
+    const NOT: &str = "not an entry heading: expected \"## <slug>\"";
+    const DEEP: &str = "a heading below level 2: entries have no sub-headings";
+    const TITLE: &str = "a \"# \" heading after the first entry";
+    const FENCE: &str = "a code fence not closed: no heading after it is read";
+    for (existing, line, reason) in [
+        ("# TODO\n\n## Open\n\n### a\n\nA.\n", 3, OPEN),
+        ("## Open\n", 1, OPEN),
+        ("# TODO\n\n## `a`\n\nA.\n\n## Open\n", 7, OPEN),
+        ("# TODO\n\n## Done\n\n### alpha\n\nOld.\n", 5, DEEP),
+        ("# TODO\n\n## two words\n", 3, NOT),
+        ("# TODO\n\n## `foo` [blocked-on: x]\n", 3, NOT),
+        ("# TODO\n\n## `a\n", 3, NOT),
+        ("# TODO\n\n##\n", 3, NOT),
+        ("# TODO\n\n### a\n", 3, DEEP),
+        ("# TODO\n\n## `a`\n\n#### a\n", 5, DEEP),
+        ("# TODO\n\n## `a`\n\nA.\n\n# Archive\n", 7, TITLE),
         (
-            "## Open\n\n### a\n\n## Open\n",
-            "more than one \"## Open\" section",
+            "# TODO\n\n## `a`\n\n```\ncode\n\n## `x`\n\nOld.\n",
+            5,
+            FENCE,
         ),
+        ("# TODO\n\n~~~ md\n## `a`\n\nA.\n", 3, FENCE),
+        ("# TODO\n\n### a\n\n```\n", 3, DEEP),
     ] {
         let (_tmp, scan, path) = on_disk(&["x"], Some(existing));
         let err = gather(&scan, &target(&path, false)).unwrap_err();
         assert!(
-            matches!(&err, Error::Target { path: p, reason: r } if *p == path && *r == reason),
-            "{err}"
+            matches!(
+                &err,
+                Error::Layout { path: p, line: l, reason: r }
+                    if *p == path && *l == line && *r == reason
+            ),
+            "{existing:?}: {err}"
+        );
+        assert_eq!(
+            err.to_string(),
+            format!("{}:{line}: {reason}", path.display())
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), existing);
         assert!(scan.fragments[0].path.exists());
@@ -475,13 +465,22 @@ fn open_must_appear_exactly_once() {
 }
 
 #[test]
+fn titles_before_the_first_entry_and_a_fenced_open_are_not_errors() {
+    let existing = "# TODO\n\n# More title\n\n```\n## Open\n### a\n```\n";
+    assert_eq!(
+        gathered(existing, &["x"]),
+        format!("{existing}\n{}", entry("x"))
+    );
+}
+
+#[test]
 fn crlf_and_symlinked_todo_files_are_errors() {
-    let (tmp, scan, path) = on_disk(&["x"], Some("## Open\r\n"));
+    let (tmp, scan, path) = on_disk(&["x"], Some("# TODO\r\n"));
     let err = gather(&scan, &target(&path, false)).unwrap_err();
     assert!(matches!(err, Error::Target { .. }), "{err}");
     fs::remove_file(&path).unwrap();
     let real = tmp.path().join("real.md");
-    fs::write(&real, "## Open\n").unwrap();
+    fs::write(&real, "# TODO\n").unwrap();
     std::os::unix::fs::symlink(&real, &path).unwrap();
     let err = gather(&scan, &target(&path, false)).unwrap_err();
     assert!(
@@ -494,5 +493,5 @@ fn crlf_and_symlinked_todo_files_are_errors() {
         ),
         "{err}"
     );
-    assert_eq!(fs::read_to_string(&real).unwrap(), "## Open\n");
+    assert_eq!(fs::read_to_string(&real).unwrap(), "# TODO\n");
 }

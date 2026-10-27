@@ -96,7 +96,7 @@ breaking change that goes in a `changed` fragment:
 
 `gather` touches only the section it inserts: the `[Unreleased]` body,
 earlier releases and link-reference definitions are never rewritten.
-`todo gather` touches only the `## Open` entries it inserts.
+`todo gather` touches only the entries it inserts.
 
 ## The one host program
 

@@ -34,6 +34,13 @@ pub enum Error {
     Git(String),
     /// The file a gather writes into cannot be read as one.
     Target { path: PathBuf, reason: &'static str },
+    /// A heading in the TODO file that is not its title or an entry.
+    Layout {
+        path: PathBuf,
+        /// 1-based.
+        line: usize,
+        reason: &'static str,
+    },
     /// The target was written, then deleting a gathered fragment failed.
     Delete {
         target: PathBuf,
@@ -65,6 +72,9 @@ impl fmt::Display for Error {
             Error::GitSpawn(source) => write!(f, "cannot run git: {source}"),
             Error::Git(message) => f.write_str(message),
             Error::Target { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Error::Layout { path, line, reason } => {
+                write!(f, "{}:{line}: {reason}", path.display())
+            }
             Error::Delete {
                 target,
                 deleted,

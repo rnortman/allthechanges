@@ -865,13 +865,13 @@ fn todo_query_lists_fragments_for_humans() {
         stdout(&output),
         "todo.d: 2 fragments, 0 problems\n\
          \n\
-         ### audit\n\
+         ## `audit`\n\
          \n\
          Audit the dependency graph.\n\
          \n\
          Second paragraph.\n\
          \n\
-         ### scan-loops\n\
+         ## `scan-loops`\n\
          \n\
          Detect a symlink cycle.\n"
     );
@@ -1131,19 +1131,15 @@ const TODO_EXISTING: &str = "\
 
 Preamble.
 
-## Open
-
-### beta
+## `beta`
 
 Beta.
 
-### delta
+## delta
 
 Delta.
 
-## Done
-
-### zzz
+## `zzz`
 
 Old.
 ";
@@ -1153,31 +1149,27 @@ const TODO_GATHERED: &str = "\
 
 Preamble.
 
-## Open
-
-### alpha
+## `alpha`
 
 Alpha.
 
-### beta
+## `beta`
 
 Beta.
 
-### charlie
+## `charlie`
 
 Charlie.
 
-### delta
+## delta
 
 Delta.
 
-### echo
+## `echo`
 
 Echo.
 
-## Done
-
-### zzz
+## `zzz`
 
 Old.
 ";
@@ -1203,7 +1195,7 @@ fn todo_gather_writes_sorted_entries_and_deletes_the_fragments() {
             "created": false,
             "dry_run": false,
             "gathered": ["todo.d/alpha.md", "todo.d/charlie.md", "todo.d/echo.md"],
-            "rendered": "### alpha\n\nAlpha.\n\n### charlie\n\nCharlie.\n\n### echo\n\nEcho.\n",
+            "rendered": "## `alpha`\n\nAlpha.\n\n## `charlie`\n\nCharlie.\n\n## `echo`\n\nEcho.\n",
             "problems": [],
             "refused": null,
             "ok": true,
@@ -1238,9 +1230,9 @@ fn todo_gather_creates_an_absent_todo_file() {
         stdout(&output),
         "dry run: would write to TODO.md (created):\n\
          \n\
-         ### audit\n\nAudit the dependency graph.\n\nSecond paragraph.\n\
+         ## `audit`\n\nAudit the dependency graph.\n\nSecond paragraph.\n\
          \n\
-         ### scan-loops\n\nDetect a symlink cycle.\n"
+         ## `scan-loops`\n\nDetect a symlink cycle.\n"
     );
     assert!(!tmp.path().join("TODO.md").exists());
     assert_eq!(left_in(tmp.path(), "todo.d").len(), 3);
@@ -1253,9 +1245,9 @@ fn todo_gather_creates_an_absent_todo_file() {
     );
     assert_eq!(
         read(tmp.path(), "TODO.md"),
-        "# TODO\n\n## Open\n\n\
-         ### audit\n\nAudit the dependency graph.\n\nSecond paragraph.\n\n\
-         ### scan-loops\n\nDetect a symlink cycle.\n"
+        "# TODO\n\n\
+         ## `audit`\n\nAudit the dependency graph.\n\nSecond paragraph.\n\n\
+         ## `scan-loops`\n\nDetect a symlink cycle.\n"
     );
 }
 
@@ -1287,7 +1279,7 @@ fn todo_gather_refuses_a_slug_already_present() {
         json!([{
             "path": "todo.d/beta.md",
             "code": "present",
-            "message": "TODO.md already has an entry \"### beta\"",
+            "message": "TODO.md already has an entry `beta` at line 5",
         }])
     );
     let output = run(tmp.path(), &["todo", "gather"]);
@@ -1297,7 +1289,7 @@ fn todo_gather_refuses_a_slug_already_present() {
         "nothing gathered: 1 problem in the fragments\n\
          \n\
          Problems:\n\
-         todo.d/beta.md: present: TODO.md already has an entry \"### beta\"\n"
+         todo.d/beta.md: present: TODO.md already has an entry `beta` at line 5\n"
     );
     assert_eq!(read(tmp.path(), "TODO.md"), TODO_EXISTING);
     assert_eq!(left_in(tmp.path(), "todo.d").len(), 5);
@@ -1342,7 +1334,7 @@ fn todo_gather_refuses_with_nothing_to_gather() {
 fn todo_gather_honours_dir_and_todo() {
     let tmp = tempfile::tempdir().unwrap();
     write(tmp.path(), "deferred/a.md", "A.\n");
-    write(tmp.path(), "docs/TODO.md", "# Work\n\n## Open\n");
+    write(tmp.path(), "docs/TODO.md", "# Work\n");
     let output = run(
         tmp.path(),
         &[
@@ -1359,23 +1351,23 @@ fn todo_gather_honours_dir_and_todo() {
         stdout(&output),
         "gathered 1 fragment into docs/TODO.md\ndeleted deferred/a.md\n"
     );
-    assert_eq!(
-        read(tmp.path(), "docs/TODO.md"),
-        "# Work\n\n## Open\n\n### a\n\nA.\n"
-    );
+    assert_eq!(read(tmp.path(), "docs/TODO.md"), "# Work\n\n## `a`\n\nA.\n");
 }
 
 #[test]
-fn todo_gather_without_an_open_section_exits_three() {
+fn todo_gather_with_an_open_section_exits_three() {
     let tmp = tempfile::tempdir().unwrap();
     todo_fixture(tmp.path());
-    write(tmp.path(), "TODO.md", "# TODO\n\n## Later\n");
+    let sectioned = "# TODO\n\n## Open\n\n### old\n\nOld.\n";
+    write(tmp.path(), "TODO.md", sectioned);
     let output = run(tmp.path(), &["todo", "gather"]);
     assert_exit(&output, 3);
+    assert_eq!(stdout(&output), "");
     assert_eq!(
         stderr(&output),
-        "allthechanges: TODO.md: no \"## Open\" section\n"
+        "allthechanges: TODO.md:3: a \"## Open\" section: \
+         entries go directly under the title as \"## <slug>\"\n"
     );
-    assert_eq!(read(tmp.path(), "TODO.md"), "# TODO\n\n## Later\n");
+    assert_eq!(read(tmp.path(), "TODO.md"), sectioned);
     assert_eq!(left_in(tmp.path(), "todo.d").len(), 3);
 }

@@ -89,22 +89,73 @@ pub(crate) fn is_fence(line: &str) -> bool {
     line.starts_with("```") || line.starts_with("~~~")
 }
 
-/// Every line starting with `prefix` (`"## "`, `"### "`) outside fenced
-/// code blocks. Every fence line opens or closes a fence.
+/// Every line outside fenced code blocks, with its index. Every fence line
+/// opens or closes a fence and is itself skipped.
+fn unfenced(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.lines()
+        .enumerate()
+        .scan(false, |fenced, (line, content)| {
+            let fence = is_fence(content);
+            if fence {
+                *fenced = !*fenced;
+            }
+            Some((!fence && !*fenced).then_some((line, content)))
+        })
+        .flatten()
+}
+
+/// Every line starting with `prefix` (`"## "`) outside fenced code blocks.
 pub(crate) fn headings<'a>(text: &'a str, prefix: &str) -> Vec<Heading<'a>> {
-    let mut fenced = false;
-    let mut found = Vec::new();
-    for (line, content) in text.lines().enumerate() {
-        if is_fence(content) {
-            fenced = !fenced;
-        } else if !fenced && let Some(rest) = content.strip_prefix(prefix) {
-            found.push(Heading {
+    unfenced(text)
+        .filter_map(|(line, content)| {
+            content.strip_prefix(prefix).map(|rest| Heading {
                 line,
                 text: rest.trim_end(),
-            });
-        }
-    }
-    found
+            })
+        })
+        .collect()
+}
+
+/// The level of an ATX heading line: one to six `#` in column 0, then a
+/// space or the end of the line.
+pub(crate) fn atx_level(line: &str) -> Option<usize> {
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    ((1..=6).contains(&hashes) && matches!(line.as_bytes().get(hashes), None | Some(b' ')))
+        .then_some(hashes)
+}
+
+/// An ATX heading: its line index, its level and its text, surrounding
+/// whitespace trimmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AtxHeading<'a> {
+    pub(crate) line: usize,
+    pub(crate) level: usize,
+    pub(crate) text: &'a str,
+}
+
+/// Every ATX heading outside fenced code blocks, at every level.
+pub(crate) fn atx_headings(text: &str) -> Vec<AtxHeading<'_>> {
+    unfenced(text)
+        .filter_map(|(line, content)| {
+            atx_level(content).map(|level| AtxHeading {
+                line,
+                level,
+                text: content[level..].trim(),
+            })
+        })
+        .collect()
+}
+
+/// The index of the fence line that opens a fenced code block never closed,
+/// if any.
+pub(crate) fn unclosed_fence(text: &str) -> Option<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, content)| is_fence(content))
+        .fold(None, |open, (line, _)| match open {
+            None => Some(line),
+            Some(_) => None,
+        })
 }
 
 /// `text` with `section` inserted before line `at`, exactly one blank line

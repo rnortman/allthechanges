@@ -342,13 +342,13 @@ fn todo_query_human_listing() {
         report.human(),
         "todo.d: 2 fragments, 1 problem\n\
          \n\
-         ### audit\n\
+         ## `audit`\n\
          \n\
          Audit the graph.\n\
          \n\
          Second paragraph.\n\
          \n\
-         ### loops\n\
+         ## `loops`\n\
          \n\
          Detect loops.\n\
          \n\
@@ -380,7 +380,7 @@ fn todo_target() -> todo::Target<'static> {
 fn todo_gathered(scan: &Scan<Todo>, created: bool) -> todo::Outcome {
     todo::Outcome::Gathered {
         created,
-        rendered: "### loops\n\nDetect loops.\n".into(),
+        rendered: "## `loops`\n\nDetect loops.\n".into(),
         fragments: scan.fragments.iter().map(|f| f.path.clone()).collect(),
     }
 }
@@ -388,7 +388,7 @@ fn todo_gathered(scan: &Scan<Todo>, created: bool) -> todo::Outcome {
 fn present(slug: &str) -> Problem {
     Finding::new(
         ProblemCode::Present,
-        format!("TODO.md already has an entry \"### {slug}\""),
+        format!("TODO.md already has an entry `{slug}` at line 3"),
     )
     .at(format!("todo.d/{slug}.md"))
 }
@@ -416,7 +416,7 @@ fn todo_gather_json_has_the_schema_fields_in_order() {
             "created": false,
             "dry_run": false,
             "gathered": ["todo.d/loops.md"],
-            "rendered": "### loops\n\nDetect loops.\n",
+            "rendered": "## `loops`\n\nDetect loops.\n",
             "problems": [],
             "refused": null,
             "ok": true,
@@ -458,7 +458,7 @@ fn todo_gather_human_forms() {
         "nothing gathered: 1 problem in the fragments\n\
          \n\
          Problems:\n\
-         todo.d/audit.md: present: TODO.md already has an entry \"### audit\"\n"
+         todo.d/audit.md: present: TODO.md already has an entry `audit` at line 3\n"
     );
     let nothing = todo::Outcome::Refused {
         refusal: Refusal::NothingToGather,
@@ -481,7 +481,7 @@ fn todo_gather_human_forms() {
     assert_eq!(
         TodoGatherReport::new(&dry, &scan, &created).human(),
         "dry run: would write to TODO.md (created):\n\n\
-         ### loops\n\nDetect loops.\n"
+         ## `loops`\n\nDetect loops.\n"
     );
     let outcome = todo_gathered(&scan, false);
     assert_eq!(

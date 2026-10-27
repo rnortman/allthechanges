@@ -23,7 +23,8 @@ Exit codes:
   3  operational error: unreadable file, git failed, both changelog.d and
      .changelog.d (or todo.d and .todo.d) present, CHANGELOG.md or TODO.md
      not a regular file, not UTF-8 or with CRLF line endings, TODO.md
-     without exactly one ## Open section
+     with a heading that is not the title or a ## <slug> entry (a ## Open
+     section, a ### heading) or a code fence never closed
 
 stdout carries the report and nothing else (with --json, one JSON document
 and a newline); stderr carries diagnostics only.";
@@ -112,12 +113,12 @@ enum TodoCommand {
         range: Option<String>,
     },
 
-    /// Move every TODO fragment into the "## Open" section of TODO.md
+    /// Move every TODO fragment into TODO.md
     ///
     /// Lints first and writes nothing on any problem or on a slug that
-    /// already has an entry. Each fragment becomes "### <slug>" and its body,
-    /// inserted before the first entry whose heading sorts after the slug,
-    /// else at the end of the section; nothing else in the file is changed.
+    /// already has an entry. Each fragment becomes "## `<slug>`" and its
+    /// body, inserted before the first entry whose slug sorts after it, else
+    /// at the end of the file; nothing else in the file is changed.
     /// The gathered fragments are then deleted. No git operation is run.
     Gather {
         /// The TODO file to write; created if absent

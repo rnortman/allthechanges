@@ -1,9 +1,11 @@
 //! The TODO kind: fragments `<slug>.md` whose bodies are an entry's
-//! paragraphs, folded into the `## Open` section of `TODO.md`, each entry
-//! under `### <slug>` at its alphabetical position.
+//! paragraphs, folded into `TODO.md`, each entry under `` ## `<slug>` ``
+//! directly under the title at its alphabetical position.
 //!
-//! Only the inserted entries are written: the title, the preamble, every
-//! existing entry and every other section stay as they are.
+//! `TODO.md` is a `# ` title, an optional preamble and one `## <slug>` or
+//! `` ## `<slug>` `` heading per entry; any other heading outside a fenced
+//! code block is an error. Only the inserted entries are written: the
+//! title, the preamble and every existing entry stay as they are.
 
 use std::path::{Path, PathBuf};
 
@@ -13,10 +15,7 @@ use crate::scan::Scan;
 use crate::target::{self, Refusal};
 
 /// The file a `gather` creates when `TODO.md` does not exist.
-const HEADER: &str = "# TODO\n\n## Open\n";
-
-/// The text of the heading entries are gathered under.
-const OPEN: &str = "Open";
+const HEADER: &str = "# TODO\n";
 
 /// The TODO fragment kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +79,7 @@ fn parse_body(bytes: &[u8]) -> Result<Vec<String>, Finding> {
                 None => Some(i + 1),
                 Some(_) => None,
             };
-        } else if open_fence.is_none() && is_atx_heading(line) {
+        } else if open_fence.is_none() && target::atx_level(line).is_some() {
             return Err(not_an_entry(
                 i + 1,
                 "a heading; the entry's heading is its file name",
@@ -95,12 +94,6 @@ fn parse_body(bytes: &[u8]) -> Result<Vec<String>, Finding> {
 
 fn not_an_entry(line: usize, why: &str) -> Finding {
     Finding::new(ProblemCode::NotAnEntry, format!("line {line}: {why}"))
-}
-
-/// One to six `#` in column 0, then a space or the end of the line.
-fn is_atx_heading(line: &str) -> bool {
-    let hashes = line.bytes().take_while(|b| *b == b'#').count();
-    (1..=6).contains(&hashes) && matches!(line.as_bytes().get(hashes), None | Some(b' '))
 }
 
 /// What to gather into.
@@ -133,11 +126,12 @@ pub enum Outcome {
     },
 }
 
-/// Gathers `scan` into the `## Open` section of the TODO file: refuses on
-/// any problem, on no fragments and on a slug that already has an entry;
-/// otherwise inserts each entry before the first existing entry whose key
-/// is greater, else at the section's end, and, unless a dry run, writes the
-/// file atomically and then deletes the fragments in order.
+/// Gathers `scan` into the TODO file: refuses on any problem, on no
+/// fragments and on a slug that already has an entry; otherwise inserts
+/// each entry before the first existing entry whose slug sorts after it,
+/// else at the end of the file, and, unless a dry run, writes the file
+/// atomically and then deletes the fragments in order. A heading that is
+/// not the title or an entry is an [`Error::Layout`].
 pub fn gather(scan: &Scan<Todo>, dest: &Target<'_>) -> Result<Outcome, Error> {
     if !scan.problems.is_empty() {
         return Ok(refused(Refusal::Problems, Vec::new()));
@@ -146,25 +140,25 @@ pub fn gather(scan: &Scan<Todo>, dest: &Target<'_>) -> Result<Outcome, Error> {
         return Ok(refused(Refusal::NothingToGather, Vec::new()));
     }
     let (existing, created) = target::read(dest.todo, HEADER)?;
-    let (start, end) = open_section(&existing, dest.todo)?;
-    let keys: Vec<target::Heading<'_>> = target::headings(&existing, "### ")
-        .into_iter()
-        .filter(|h| start < h.line && h.line < end)
-        .collect();
+    let keys = entries(&existing, dest.todo)?;
+    let end = existing.lines().count();
     let present: Vec<Problem> = scan
         .fragments
         .iter()
-        .filter(|f| keys.iter().any(|k| k.text == f.name.slug))
-        .map(|f| {
-            Finding::new(
-                ProblemCode::Present,
-                format!(
-                    "{} already has an entry \"### {}\"",
-                    dest.todo.display(),
-                    f.name.slug
-                ),
+        .filter_map(|f| {
+            let key = keys.iter().find(|k| k.slug == f.name.slug)?;
+            Some(
+                Finding::new(
+                    ProblemCode::Present,
+                    format!(
+                        "{} already has an entry `{}` at line {}",
+                        dest.todo.display(),
+                        f.name.slug,
+                        key.line + 1
+                    ),
+                )
+                .at(f.path.display().to_string()),
             )
-            .at(f.path.display().to_string())
         })
         .collect();
     if !present.is_empty() {
@@ -179,7 +173,7 @@ pub fn gather(scan: &Scan<Todo>, dest: &Target<'_>) -> Result<Outcome, Error> {
     for (fragment, entry) in scan.fragments.iter().zip(&entries) {
         let at = keys
             .iter()
-            .find(|k| k.text > fragment.name.slug.as_str())
+            .find(|k| k.slug > fragment.name.slug.as_str())
             .map_or(end, |k| k.line);
         match groups.iter_mut().find(|(line, _)| *line == at) {
             Some((_, group)) => group.push(entry),
@@ -207,40 +201,63 @@ fn refused(refusal: Refusal, present: Vec<Problem>) -> Outcome {
     Outcome::Refused { refusal, present }
 }
 
-/// The line indices of the one `## Open` heading and of the end of its
-/// section: the next `# ` or `## ` heading, else the line count. None or several
-/// `## Open` headings are an [`Error::Target`].
-fn open_section(text: &str, path: &Path) -> Result<(usize, usize), Error> {
-    let sections = target::headings(text, "## ");
-    let mut open = sections.iter().enumerate().filter(|(_, h)| h.text == OPEN);
-    let Some((i, heading)) = open.next() else {
-        return Err(Error::Target {
-            path: path.to_path_buf(),
-            reason: "no \"## Open\" section",
-        });
-    };
-    if open.next().is_some() {
-        return Err(Error::Target {
-            path: path.to_path_buf(),
-            reason: "more than one \"## Open\" section",
-        });
-    }
-    let next_section = sections.get(i + 1).map(|h| h.line);
-    let next_part = target::headings(text, "# ")
-        .into_iter()
-        .map(|h| h.line)
-        .find(|&line| line > heading.line);
-    let end = [next_section, next_part]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(text.lines().count());
-    Ok((heading.line, end))
+/// An entry heading: its line index and its slug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Entry<'a> {
+    line: usize,
+    slug: &'a str,
 }
 
-/// An entry: `### <slug>`, a blank line, the body. Ends with one `\n`.
+/// The entry headings of a TODO file, in file order. Outside fenced code
+/// blocks, a `# ` heading before the first entry is a title and a `## `
+/// heading whose text, without one pair of surrounding backticks, is a slug
+/// is an entry; every other heading, and a bare `## Open`, is an
+/// [`Error::Layout`] at its line, as is a fence that is never closed.
+fn entries<'a>(text: &'a str, path: &Path) -> Result<Vec<Entry<'a>>, Error> {
+    let mut found: Vec<Entry<'a>> = Vec::new();
+    for heading in target::atx_headings(text) {
+        let reason = match heading.level {
+            1 if found.is_empty() => continue,
+            1 => "a \"# \" heading after the first entry",
+            2 if heading.text == "Open" => {
+                "a \"## Open\" section: entries go directly under the title as \"## <slug>\""
+            }
+            2 => {
+                let slug = heading
+                    .text
+                    .strip_prefix('`')
+                    .and_then(|t| t.strip_suffix('`'))
+                    .unwrap_or(heading.text);
+                if is_slug(slug) {
+                    found.push(Entry {
+                        line: heading.line,
+                        slug,
+                    });
+                    continue;
+                }
+                "not an entry heading: expected \"## <slug>\""
+            }
+            _ => "a heading below level 2: entries have no sub-headings",
+        };
+        return Err(Error::Layout {
+            path: path.to_path_buf(),
+            line: heading.line + 1,
+            reason,
+        });
+    }
+    if let Some(line) = target::unclosed_fence(text) {
+        return Err(Error::Layout {
+            path: path.to_path_buf(),
+            line: line + 1,
+            reason: "a code fence not closed: no heading after it is read",
+        });
+    }
+    Ok(found)
+}
+
+/// An entry: `` ## `<slug>` ``, a blank line, the body. Ends with one `\n`.
 fn render(slug: &str, body: &[String]) -> String {
-    let mut out = format!("### {slug}\n\n");
+    let mut out = format!("## `{slug}`\n\n");
     for line in body {
         out.push_str(line);
         out.push('\n');

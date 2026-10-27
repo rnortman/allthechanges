@@ -7,9 +7,7 @@ halves, and removing one removes both.
 
 Every entry is public writing.
 
-## Open
-
-### dependency-audit-lane
+## `dependency-audit-lane`
 
 A license and advisory audit of the Rust dependency graph (for example
 `cargo deny`) belongs in `make check` before the first crate is published.
@@ -23,7 +21,7 @@ bans test now with advisories later. The `TODO(dependency-audit-lane)` comment
 sits above `check` in the `Makefile`. The repository has one crate hub for
 the package and one under `tools/scrub` for the scanner; both are in scope.
 
-### security-symlinked-fragment-directory-read-and-deleted
+## `security-symlinked-fragment-directory-read-and-deleted`
 
 `locate` in `src/scan.rs` follows a `changelog.d`, `.changelog.d`, `todo.d`
 or `.todo.d` that is itself a symlink. Only the entries inside are checked

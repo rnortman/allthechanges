@@ -2,24 +2,38 @@ use super::*;
 
 #[test]
 fn deeper_headings_are_not_release_headings() {
-    let found = headings("### [1.0.0]\n#### x\n##no-space\n## [1.0.0] \n", "## ");
+    let found = headings(
+        "### [1.0.0]\n#### x\n##no-space\n## [1.0.0] \n~~~\n## [0.9.0]\n~~~\n## [0.8.0]\n",
+        "## ",
+    );
     assert_eq!(
         found,
-        [Heading {
-            line: 3,
-            text: "[1.0.0]"
-        }]
+        [
+            Heading {
+                line: 3,
+                text: "[1.0.0]"
+            },
+            Heading {
+                line: 7,
+                text: "[0.8.0]"
+            }
+        ]
     );
 }
 
 #[test]
-fn entry_headings_are_found_by_their_prefix() {
-    let text = "## Open\n\n### a \n#### sub\n```\n### fenced\n```\n### b\n";
+fn atx_headings_report_every_level_outside_fences() {
+    let text =
+        "# T\n\n## `a` \n#### sub\n```\n## fenced\n```\n##\n##no\n####### seven\n###### six\n";
+    let h = |line, level, text| AtxHeading { line, level, text };
     assert_eq!(
-        headings(text, "### "),
+        atx_headings(text),
         [
-            Heading { line: 2, text: "a" },
-            Heading { line: 7, text: "b" }
+            h(0, 1, "T"),
+            h(2, 2, "`a`"),
+            h(3, 4, "sub"),
+            h(7, 2, ""),
+            h(10, 6, "six"),
         ]
     );
 }

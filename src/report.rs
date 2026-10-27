@@ -264,7 +264,7 @@ impl<'a> TodoQueryReport<'a> {
         to_json(self)
     }
 
-    /// The human report: a header line, each fragment as `### <slug>` and
+    /// The human report: a header line, each fragment as `` ## `<slug>` `` and
     /// its body verbatim, blank-line separated, then the problems.
     pub fn human(&self) -> String {
         let mut out = String::new();
@@ -276,7 +276,7 @@ impl<'a> TodoQueryReport<'a> {
             self.problems.len(),
         );
         for fragment in &self.fragments {
-            let _ = writeln!(out, "\n### {}\n", fragment.slug);
+            let _ = writeln!(out, "\n## `{}`\n", fragment.slug);
             for line in fragment.body {
                 let _ = writeln!(out, "{line}");
             }

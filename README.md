@@ -149,8 +149,8 @@ earlier releases and link-reference definitions stay as they are. A missing
 A TODO fragment is a file in `todo.d/` (or `.todo.d/`; a repository with
 both is an error) named `<slug>.md`, where `slug` is letters, digits, `-`
 and `_` — the same characters a `TODO(slug)` comment in code carries. Its
-body is the entry's text, written into `TODO.md` under a `### <slug>`
-heading:
+body is the entry's text, written into `TODO.md` under a
+`` ## `<slug>` `` heading:
 
 ```sh
 mkdir -p todo.d
@@ -159,8 +159,7 @@ printf 'Detect a symlink cycle under the fragment directory.
 ```
 
 The body is paragraphs, lists and code blocks, with three rules, so that
-the next `todo gather` still finds every section and entry in the file it
-wrote:
+the next `todo gather` still finds every entry in the file it wrote:
 
 - the first line is text, not blank;
 - no ATX heading (`#` to `######` in column 0, then a space or the end of
@@ -176,18 +175,26 @@ directory is a fragment, `README.md` included: notes about the directory
 kept inside it take a leading `.` (`.README.md`). A symlink is
 `not-a-fragment`, as for changelog fragments.
 
-`TODO.md` keeps its entries in a `## Open` section, one `### <key>` heading
-each:
+`TODO.md` is a `# ` title, an optional preamble, and one entry per
+`` ## `<slug>` `` heading directly under the title, each running to the
+next `## ` heading or the end of the file; there are no sections:
 
 ```markdown
 # TODO
 
-## Open
+The deferred work of this repository.
 
-### scan-symlink-loops
+## `scan-symlink-loops`
 
 Detect a symlink cycle under the fragment directory.
 ```
+
+A bare `## <slug>` heading is an entry too, with the same slug. A slug may
+be capitalised, so a hand-written `## Done` is the entry `Done`, not a
+section. Any other heading outside a fenced code block is an error: a bare
+`## Open`, a `## ` heading whose text is not a slug, a `# ` heading after
+the first entry, and any heading of level three or deeper. So is a code
+fence that is never closed, which would hide every heading after it.
 
 ## `todo query`
 
@@ -201,11 +208,11 @@ Lists every TODO fragment in slug order, then the problems:
 $ allthechanges todo query
 todo.d: 2 fragments, 1 problem
 
-### dependency-audit-lane
+## `dependency-audit-lane`
 
 A license and advisory audit of the Rust dependency graph.
 
-### scan-symlink-loops
+## `scan-symlink-loops`
 
 Detect a symlink cycle under the fragment directory.
 
@@ -226,14 +233,16 @@ allthechanges [--dir <path>] [--json] todo gather [--todo <path>] [--dry-run]
 Lints first and writes nothing if there is any problem, if there are no
 fragments, or if `TODO.md` already has an entry for a fragment's slug (the
 problem `present`, on that fragment). Otherwise it writes each fragment as
-`### <slug>`, a blank line and its body into the `## Open` section of
-`TODO.md`, before the first entry whose heading sorts after the slug (byte
-order), else at the end of the section (the next `# ` or `## ` heading, or
-the end of the file), and then deletes the fragments it gathered. A `TODO.md` whose entries are sorted stays sorted. Nothing else
-changes: the title, the preamble, every existing entry and every other
-section stay as they are, and nothing is reordered. A missing `TODO.md` is
-created as `# TODO` and `## Open`; one without a `## Open` section, or with
-more than one, is an error.
+`` ## `<slug>` ``, a blank line and its body into `TODO.md`, before the
+first entry whose slug sorts after the fragment's (byte order), else at the
+end of the file, and then deletes the fragments it gathered. A `TODO.md`
+whose entries are sorted stays sorted. Nothing else changes: the title, the
+preamble and every existing entry stay as they are, and nothing is
+reordered. A missing `TODO.md` is created as `# TODO`. A `TODO.md` with a
+heading that is neither the title nor an entry — a `## Open` section, a
+`### ` heading, a `## ` heading that is not a slug, a `# ` heading after the
+first entry — or a code fence that is never closed is an error naming the
+line, and nothing is written.
 
 - `--todo` defaults to `TODO.md` in the current directory, with the same
   file rules as `--changelog`.
@@ -246,7 +255,7 @@ more than one, is an error.
 | 0 | Done; for `query`, no problems and (with `--require`) at least one fragment. |
 | 1 | The check failed: lint problems, `--require` with no fragment, or `gather` or `todo gather` refused. |
 | 2 | Usage error. |
-| 3 | Operational error: an unreadable file, git failed or absent, not a git repository, both `changelog.d` and `.changelog.d` (or `todo.d` and `.todo.d`) present, `CHANGELOG.md` or `TODO.md` not a regular file, not UTF-8 or with CRLF line endings, `TODO.md` without exactly one `## Open` section. |
+| 3 | Operational error: an unreadable file, git failed or absent, not a git repository, both `changelog.d` and `.changelog.d` (or `todo.d` and `.todo.d`) present, `CHANGELOG.md` or `TODO.md` not a regular file, not UTF-8 or with CRLF line endings, `TODO.md` with a heading that is not the title or a `## <slug>` entry, or with a code fence never closed. |
 
 stdout carries the report and nothing else; stderr carries diagnostics
 only. On exit 0 and 1 stderr is empty and stdout holds the report; on exit
@@ -339,7 +348,7 @@ release bot sees when it re-runs after the release was already gathered.
   "created": false,
   "dry_run": false,
   "gathered": ["todo.d/scan-symlink-loops.md"],
-  "rendered": "### scan-symlink-loops\n\nDetect a symlink cycle under the fragment directory.\n",
+  "rendered": "## `scan-symlink-loops`\n\nDetect a symlink cycle under the fragment directory.\n",
   "problems": [],
   "refused": null,
   "ok": true
